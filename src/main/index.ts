@@ -121,6 +121,18 @@ function assistantFailureMessage(): string {
 }
 
 function parseDateFromTaskText(text: string): string | null {
+  const relative = text.match(/\bin\s+(\d+)\s*(minute|minutes|min|hour|hours|hr|hrs|day|days)\b/i)
+  if (relative) {
+    const amount = Number(relative[1])
+    const unit = relative[2].toLowerCase()
+    const date = new Date()
+    if (unit.startsWith('min')) date.setMinutes(date.getMinutes() + amount)
+    else if (unit.startsWith('hour') || unit === 'hr' || unit === 'hrs') {
+      date.setHours(date.getHours() + amount)
+    } else if (unit.startsWith('day')) date.setDate(date.getDate() + amount)
+    return date.toISOString()
+  }
+
   const numeric = text.match(
     /\b(?:on\s+)?(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?)?/i
   )
@@ -157,15 +169,27 @@ function parseDateFromTaskText(text: string): string | null {
 }
 
 function cleanTaskTitle(text: string): string {
-  return text
+  let title = text
+    .replace(/^\s*(hi|hey|hello)[,!]?\s+/i, '')
+    .replace(/\bin\s+\d+\s*(minute|minutes|min|hour|hours|hr|hrs|day|days)\b/gi, '')
     .replace(/\b(?:on\s+)?\d{1,2}\/\d{1,2}\/\d{2,4}(?:\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/gi, '')
     .replace(/\btomorrow(?:\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/gi, '')
     .replace(/^(please\s+)?(create|add|make)\s+(a\s+)?(new\s+)?(task|todo|to-do)\s*/i, '')
     .replace(/^(please\s+)?(create|add|make)\s+(a\s+)?(new\s+)?(task|todo|to-do)\s+(to|for|called|named)\s*/i, '')
     .replace(/^(please\s+)?schedule\s+(a\s+)?/i, '')
+    .replace(/\s+(as|like)\s+(a\s+)?(task|todo|to-do)\b/gi, '')
+    .replace(/\s+(for me|for myself)\b/gi, '')
+    .replace(/\b(task|todo|to-do)\s+(for|to)\b/gi, '')
     .replace(/^(to|for|called|named)\s+/i, '')
     .replace(/\s+/g, ' ')
     .trim()
+
+  title = title.replace(/\bfor\s+([A-Z][a-z]+)$/i, 'with $1')
+
+  const meetingWith = title.match(/\bmeeting\b(?:\s+with)?\s+(.+)$/i)
+  if (meetingWith) title = `Meeting with ${meetingWith[1].trim()}`
+
+  return title
 }
 
 function isTaskRequest(text: string): boolean {

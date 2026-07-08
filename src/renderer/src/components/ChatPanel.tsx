@@ -66,7 +66,8 @@ export function ChatPanel({
             {m.role === 'assistant' &&
               m.intent &&
               m.intent !== 'general_chat' &&
-              m.intent !== 'generate_email' && (
+              m.intent !== 'generate_email' &&
+              m.intent !== 'create_task' && (
               <span className="intent-tag">{m.intent.replace(/_/g, ' ')}</span>
             )}
             {m.content}
