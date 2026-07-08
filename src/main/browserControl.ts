@@ -22,7 +22,7 @@ const KNOWN_SITES: KnownSite[] = [
   {
     label: 'Gmail',
     url: 'https://mail.google.com',
-    aliases: ['gmail', 'google mail']
+    aliases: ['gmail', 'gnail', 'google mail', 'mail.google.com']
   },
   {
     label: 'Google Calendar',
@@ -99,6 +99,28 @@ export function resolveSite(text: string): ResolvedSite | null {
     return { label: stripUrlLabel(url), url: normalizedUrl }
   }
 
+  if (!hasBrowserContext(text)) return null
+
+  const target = extractSiteTarget(text)
+  if (!target) return null
+  return {
+    label: titleCase(target),
+    url: `https://www.${target.toLowerCase()}.com`
+  }
+}
+
+export function resolveSiteForClose(text: string): ResolvedSite | null {
+  const known = resolveKnownSite(text)
+  if (known) return known
+
+  const url = text.match(/\bhttps?:\/\/[^\s]+|\b[a-z0-9-]+\.(com|ai|io|net|org|dev)\b/i)?.[0]
+  if (url) {
+    const normalizedUrl = url.startsWith('http') ? url : `https://${url}`
+    return { label: stripUrlLabel(url), url: normalizedUrl }
+  }
+
+  if (!hasBrowserContext(text)) return null
+
   const target = extractSiteTarget(text)
   if (!target) return null
   return {
@@ -113,6 +135,12 @@ export function hasBrowserSiteIntent(text: string): boolean {
   return hasOpenVerb && !!resolveSite(text)
 }
 
+export function hasBrowserSiteCloseIntent(text: string): boolean {
+  const lower = text.toLowerCase()
+  const hasCloseVerb = /\b(close|quit|exit|shut)\b/.test(lower)
+  return hasCloseVerb && !!resolveSiteForClose(text)
+}
+
 export function openKnownSite(
   text: string,
   browser: BrowserName = resolveBrowser(text)
@@ -122,7 +150,7 @@ export function openKnownSite(
     return {
       ok: false,
       reason:
-        'Autonomy can currently open only known sites such as Gmail, Claude, Google Calendar, Drive, Docs, YouTube, ChatGPT, and Google Search.'
+        'AI Assistant can currently open only known sites such as Gmail, Claude, Google Calendar, Drive, Docs, YouTube, ChatGPT, and Google Search.'
     }
   }
 
@@ -139,14 +167,57 @@ export function openKnownSite(
   return { ok: true, browser: appName, site: site.label, url: site.url }
 }
 
+export function closeKnownSite(
+  text: string,
+  browser: BrowserName = resolveBrowser(text)
+): BrowserControlResult {
+  const site = resolveSiteForClose(text)
+  if (!site) {
+    return {
+      ok: false,
+      reason:
+        'AI Assistant could not identify which browser tab to close. Try naming the site, like "close Gmail in Chrome".'
+    }
+  }
+
+  const appName = BROWSERS[browser]
+  const host = hostnameFor(site.url)
+  const script =
+    browser === 'safari'
+      ? safariCloseScript(appName, site, host)
+      : chromeCloseScript(appName, site, host)
+  const result = spawnSync('osascript', ['-e', script], { encoding: 'utf8' })
+  if (result.error) return { ok: false, reason: result.error.message }
+  if (result.status !== 0) {
+    return {
+      ok: false,
+      reason: (result.stderr || result.stdout || `exit code ${result.status}`).trim()
+    }
+  }
+
+  const closedCount = Number.parseInt(result.stdout.trim(), 10)
+  if (!Number.isFinite(closedCount) || closedCount < 1) {
+    return {
+      ok: false,
+      reason: `No matching ${site.label} tab was found in ${appName}.`
+    }
+  }
+
+  return { ok: true, browser: appName, site: site.label, url: site.url }
+}
+
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function hasBrowserContext(text: string): boolean {
+  return /\b(tab|website|site|page|browser|chrome|google chrome|safari)\b/i.test(text)
 }
 
 function extractSiteTarget(text: string): string | null {
   let target = text
     .toLowerCase()
-    .replace(/\b(open|launch|start|go to|navigate to)\b/g, ' ')
+    .replace(/\b(open|launch|start|go to|navigate to|close|quit|exit|shut)\b/g, ' ')
     .replace(/\b(a|an|the|new|tab|website|site|page|application|app)\b/g, ' ')
     .replace(/\b(in|on|with|using|inside|within|while in)\s+(google|chrome|google chrome|safari|browser)\b/g, ' ')
     .replace(/\b(google|chrome|google chrome|safari|browser)\b/g, ' ')
@@ -171,4 +242,58 @@ function stripUrlLabel(value: string): string {
 
 function titleCase(value: string): string {
   return value.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+function hostnameFor(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./i, '')
+  } catch {
+    return url.replace(/^https?:\/\//i, '').replace(/^www\./i, '').split('/')[0]
+  }
+}
+
+function appleString(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+}
+
+function chromeCloseScript(appName: string, site: ResolvedSite, host: string): string {
+  const matchUrl = appleString(host)
+  const matchTitle = appleString(site.label)
+  return `tell application "${appleString(appName)}"
+set closedCount to 0
+repeat with w in windows
+set tabCount to count of tabs of w
+repeat with i from tabCount to 1 by -1
+set currentTab to tab i of w
+set tabUrl to URL of currentTab as string
+set tabTitle to title of currentTab as string
+if tabUrl contains "${matchUrl}" or tabTitle contains "${matchTitle}" then
+close currentTab
+set closedCount to closedCount + 1
+end if
+end repeat
+end repeat
+return closedCount
+end tell`
+}
+
+function safariCloseScript(appName: string, site: ResolvedSite, host: string): string {
+  const matchUrl = appleString(host)
+  const matchTitle = appleString(site.label)
+  return `tell application "${appleString(appName)}"
+set closedCount to 0
+repeat with w in windows
+set tabCount to count of tabs of w
+repeat with i from tabCount to 1 by -1
+set currentTab to tab i of w
+set tabUrl to URL of currentTab as string
+set tabTitle to name of currentTab as string
+if tabUrl contains "${matchUrl}" or tabTitle contains "${matchTitle}" then
+close currentTab
+set closedCount to closedCount + 1
+end if
+end repeat
+end repeat
+return closedCount
+end tell`
 }

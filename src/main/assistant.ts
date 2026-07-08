@@ -3,6 +3,8 @@ import type { Intent } from '@shared/types'
 import { allowlistLabels } from './appOpener'
 import { getRawSettings, listMessages, getWritingProfile } from './db'
 
+type RawSettings = ReturnType<typeof getRawSettings>
+
 // The embedded system prompt. This is the product's "brain" contract; the
 // structured-output rules and live context are appended at call time.
 const BASE_SYSTEM_PROMPT = `You are a personal autonomy assistant embedded in a desktop widget.
@@ -278,7 +280,7 @@ function validationIssues(error: { issues: { path: (string | number)[]; message:
 }
 
 async function callConfiguredModel(
-  settings: ReturnType<typeof getRawSettings>,
+  settings: RawSettings,
   system: string,
   history: ChatTurn[],
   userText: string
@@ -290,6 +292,20 @@ async function callConfiguredModel(
     return callOllama(settings.model, system, history, userText)
   }
   return callAnthropic(settings.apiKey, settings.model, system, history, userText)
+}
+
+async function callConfiguredPlainModel(
+  settings: RawSettings,
+  system: string,
+  userText: string
+): Promise<string> {
+  if (settings.provider === 'openai') {
+    return callOpenAIPlain(settings.apiKey, settings.model, system, userText)
+  }
+  if (settings.provider === 'ollama') {
+    return callOllamaPlain(settings.model, system, userText)
+  }
+  return callAnthropic(settings.apiKey, settings.model, system, [], userText)
 }
 
 function parseAssistantResponse(raw: string): AssistantResponse {
@@ -318,6 +334,55 @@ Original user request:
 ${originalText}`
 }
 
+function cleanStyledEmailBody(text: string): string {
+  return text
+    .trim()
+    .replace(/^```(?:text|markdown)?/i, '')
+    .replace(/```$/i, '')
+    .replace(/^(?:revised\s+)?(?:email\s+)?draft\s*:?\s*/i, '')
+    .trim()
+}
+
+async function applyWritingStyleToEmail(
+  response: AssistantResponse,
+  settings: RawSettings
+): Promise<AssistantResponse> {
+  if (response.intent !== 'generate_email' || !response.email?.body.trim()) return response
+
+  const profile = getWritingProfile()
+  if (!profile?.summary.trim()) return response
+
+  const system =
+    'You are an email style editor. Revise the provided draft so it matches the saved writing style profile. ' +
+    'Preserve the same recipient, purpose, facts, names, dates, locations, and ask. ' +
+    'Lightly fix grammar and clarity, but do not completely rewrite the message or add new details. ' +
+    'Use the profile greeting/sign-off habits when present. Output only the revised email body.'
+
+  const userText = `Saved writing style profile:
+${profile.summary}
+
+Draft email body:
+${response.email.body}
+
+Revise the draft to match the saved style profile while keeping the same meaning and details.`
+
+  try {
+    const styledBody = cleanStyledEmailBody(
+      await callConfiguredPlainModel(settings, system, userText)
+    )
+    if (!styledBody) return response
+    return {
+      ...response,
+      email: {
+        ...response.email,
+        body: styledBody
+      }
+    }
+  } catch {
+    return response
+  }
+}
+
 /**
  * Send user text to the configured provider and return a validated response.
  * Throws AssistantError with a user-friendly message on any failure so the
@@ -340,7 +405,7 @@ export async function runAssistant(userText: string): Promise<AssistantResponse>
   }
 
   try {
-    return parseAssistantResponse(raw)
+    return await applyWritingStyleToEmail(parseAssistantResponse(raw), s)
   } catch (firstErr) {
     const failure = firstErr instanceof Error ? firstErr.message : 'Unknown validation error.'
     try {
@@ -350,7 +415,7 @@ export async function runAssistant(userText: string): Promise<AssistantResponse>
         history,
         repairPrompt(userText, failure)
       )
-      return parseAssistantResponse(retryRaw)
+      return await applyWritingStyleToEmail(parseAssistantResponse(retryRaw), s)
     } catch (retryErr) {
       if (retryErr instanceof AssistantError) throw retryErr
       throw new AssistantError(`Couldn't repair the model response: ${(retryErr as Error).message}`)
@@ -365,7 +430,8 @@ export async function summarizeWritingProfile(samples: string[]): Promise<string
   const system =
     'You analyze writing samples and produce a compact, reusable style profile. ' +
     'Describe tone, sentence length, formality, greetings/sign-offs, punctuation habits, ' +
-    'and characteristic phrases. Output 4-8 short bullet-like lines of plain text, no preamble.'
+    'and characteristic phrases. Include exact preferred greetings and sign-offs when visible, ' +
+    'or say when the samples do not show a consistent one. Output 4-8 short bullet-like lines of plain text, no preamble.'
   const joined = samples
     .map((t, i) => `--- Sample ${i + 1} ---\n${t}`)
     .join('\n\n')

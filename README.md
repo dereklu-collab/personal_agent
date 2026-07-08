@@ -1,4 +1,4 @@
-# Personal Autonomy Assistant
+# AI Assistant
 
 An always-on-top desktop widget that turns intentions into action. Type or speak a
 plan and the assistant extracts tasks, sets reminders, drafts messages in your own

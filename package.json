@@ -1,5 +1,6 @@
 {
   "name": "personal-autonomy-assistant",
+  "productName": "AI Assistant",
   "version": "0.1.0",
   "description": "An always-on-top desktop widget that turns intentions into tasks, reminders, drafts, and scheduled app launches.",
   "main": "./out/main/index.js",

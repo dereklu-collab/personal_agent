@@ -42,7 +42,7 @@ export function FloatingWidget({
     <div className="panel">
       <div className="header">
         <span className={`dot ${status}`} />
-        <span className="title">Autonomy Assistant</span>
+        <span className="title">AI Assistant</span>
         <button onClick={onOpenSettings} title="Settings" aria-label="Settings">
           ⚙
         </button>

@@ -3,7 +3,12 @@ import { join } from 'node:path'
 import type { AssistantResult, BridgeEvent, Message, PublicSettings } from '@shared/types'
 import * as db from './db'
 import { resolveApp, allowlistLabels, openApp, closeApp } from './appOpener'
-import { hasBrowserSiteIntent, openKnownSite } from './browserControl'
+import {
+  closeKnownSite,
+  hasBrowserSiteCloseIntent,
+  hasBrowserSiteIntent,
+  openKnownSite
+} from './browserControl'
 import {
   runAssistant,
   summarizeWritingProfile,
@@ -38,9 +43,11 @@ function applyBounds(): void {
 }
 
 function createWindow(): void {
+  app.setName('AI Assistant')
   const size = COLLAPSED
   const { x, y } = positionFor(size)
   win = new BrowserWindow({
+    title: 'AI Assistant',
     width: size.width,
     height: size.height,
     x,
@@ -132,7 +139,7 @@ function parseRelativeDate(text: string): string | null {
 
 function assistantFailureMessage(): string {
   return (
-    'This request cannot be fulfilled. Autonomy cannot complete this action yet. ' +
+    'This request cannot be fulfilled. AI Assistant cannot complete this action yet. ' +
     'Please try rephrasing the request or use a supported command.'
   )
 }
@@ -287,7 +294,7 @@ function tryOpenAppNow(text: string, userMessage: Message): AssistantResult | nu
   const label = resolveApp(text)
   if (!label) {
     const message =
-      'This request cannot be fulfilled. Autonomy can currently open only these apps: ' +
+      'This request cannot be fulfilled. AI Assistant can currently open only these apps: ' +
       `${allowlistLabels().join(', ')}.`
     const assistantMessage = db.addMessage('assistant', message, 'schedule_app_open')
     return {
@@ -300,7 +307,7 @@ function tryOpenAppNow(text: string, userMessage: Message): AssistantResult | nu
   const result = openApp(label)
   const message = result.ok
     ? `Opening ${result.label} now.`
-    : `This request cannot be fulfilled. Autonomy could not open ${label}. ${result.reason}`
+    : `This request cannot be fulfilled. AI Assistant could not open ${label}. ${result.reason}`
   const assistantMessage = db.addMessage('assistant', message, 'schedule_app_open')
   if (!result.ok) db.addLog('system', `Immediate app open failed: ${label}: ${result.reason}`)
   return {
@@ -317,7 +324,7 @@ function tryCloseAppNow(text: string, userMessage: Message): AssistantResult | n
   const label = resolveApp(text)
   if (!label) {
     const message =
-      'This request cannot be fulfilled. Autonomy can currently close only these apps: ' +
+      'This request cannot be fulfilled. AI Assistant can currently close only these apps: ' +
       `${allowlistLabels().join(', ')}.`
     const assistantMessage = db.addMessage('assistant', message, 'schedule_app_open')
     return {
@@ -330,7 +337,7 @@ function tryCloseAppNow(text: string, userMessage: Message): AssistantResult | n
   const result = closeApp(label)
   const message = result.ok
     ? `Closing ${result.label}.`
-    : `This request cannot be fulfilled. Autonomy could not close ${label}. ${result.reason}`
+    : `This request cannot be fulfilled. AI Assistant could not close ${label}. ${result.reason}`
   const assistantMessage = db.addMessage('assistant', message, 'schedule_app_open')
   if (!result.ok) db.addLog('system', `Immediate app close failed: ${label}: ${result.reason}`)
   return {
@@ -356,6 +363,22 @@ function tryBrowserSiteOpen(text: string, userMessage: Message): AssistantResult
   }
 }
 
+function tryBrowserSiteClose(text: string, userMessage: Message): AssistantResult | null {
+  if (!hasBrowserSiteCloseIntent(text)) return null
+
+  const result = closeKnownSite(text)
+  const message = result.ok
+    ? `Closed ${result.site} in ${result.browser}.`
+    : `This request cannot be fulfilled. ${result.reason}`
+  const assistantMessage = db.addMessage('assistant', message, 'schedule_app_open')
+  if (!result.ok) db.addLog('system', `Browser close action failed: ${result.reason}`)
+  return {
+    userMessage,
+    assistantMessage,
+    intent: 'schedule_app_open'
+  }
+}
+
 function tryScheduleAppOpen(text: string, userMessage: Message): AssistantResult | null {
   const lower = text.toLowerCase()
   if (!/\b(open|launch|start)\b/.test(lower)) return null
@@ -366,7 +389,7 @@ function tryScheduleAppOpen(text: string, userMessage: Message): AssistantResult
   const label = resolveApp(text)
   if (!label) {
     const message =
-      'This request cannot be fulfilled. Autonomy can currently schedule only these apps: ' +
+      'This request cannot be fulfilled. AI Assistant can currently schedule only these apps: ' +
       `${allowlistLabels().join(', ')}.`
     const assistantMessage = db.addMessage('assistant', message, 'schedule_app_open')
     return { userMessage, assistantMessage, intent: 'schedule_app_open' }
@@ -500,6 +523,12 @@ function registerIpc(): void {
     if (scheduledOpenResult) {
       emit({ type: 'data-changed' })
       return scheduledOpenResult
+    }
+
+    const browserSiteCloseResult = tryBrowserSiteClose(text.trim(), userMessage)
+    if (browserSiteCloseResult) {
+      emit({ type: 'data-changed' })
+      return browserSiteCloseResult
     }
 
     const closeAppResult = tryCloseAppNow(text.trim(), userMessage)
