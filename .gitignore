@@ -1,0 +1,21 @@
+# dependencies & build output
+node_modules/
+out/
+dist/
+
+# logs & OS cruft
+*.log
+.DS_Store
+Thumbs.db
+
+# secrets — NEVER commit real API keys
+.env
+.env.local
+.env.*.local
+
+# local databases (in case one ever lands in the project dir during testing)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
