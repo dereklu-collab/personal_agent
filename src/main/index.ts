@@ -234,6 +234,53 @@ function tryCreateTaskNow(text: string, userMessage: Message): AssistantResult |
   }
 }
 
+function cleanReminderTitle(text: string): string {
+  return text
+    .replace(/^\s*(hi|hey|hello)[,!]?\s+/i, '')
+    .replace(/\bin\s+\d+\s*(second|seconds|sec|secs|minute|minutes|min|hour|hours|hr|hrs|day|days)\b/gi, '')
+    .replace(/\b(?:on\s+)?\d{1,2}\/\d{1,2}\/\d{2,4}(?:\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/gi, '')
+    .replace(/\btomorrow(?:\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/gi, '')
+    .replace(/^(please\s+)?(set|create|add|make)\s+(a\s+)?(new\s+)?reminder\s*/i, '')
+    .replace(/^remind\s+me\s*/i, '')
+    .replace(/^(to|for|about)\s+/i, '')
+    .replace(/\s+(for me|for myself)\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function isReminderRequest(text: string): boolean {
+  return /\b(remind me|set\s+(a\s+)?reminder|create\s+(a\s+)?reminder|add\s+(a\s+)?reminder)\b/i.test(
+    text
+  )
+}
+
+function tryCreateReminderNow(text: string, userMessage: Message): AssistantResult | null {
+  if (!isReminderRequest(text)) return null
+  const datetime = parseDateFromTaskText(text)
+  if (!datetime) return null
+
+  const title = cleanReminderTitle(text)
+  if (!title || /^(it|this|that)$/i.test(title)) return null
+
+  db.addReminder(title, datetime, 'none')
+  const when = new Date(datetime).toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  })
+  const assistantMessage = db.addMessage(
+    'assistant',
+    `Reminder set: ${title}. I’ll remind you ${when}.`,
+    'create_reminder'
+  )
+  return {
+    userMessage,
+    assistantMessage,
+    intent: 'create_reminder'
+  }
+}
+
 function tryOpenAppNow(text: string, userMessage: Message): AssistantResult | null {
   if (!hasImmediateOpenIntent(text)) return null
 
@@ -471,6 +518,12 @@ function registerIpc(): void {
     if (immediateOpenResult) {
       emit({ type: 'data-changed' })
       return immediateOpenResult
+    }
+
+    const immediateReminderResult = tryCreateReminderNow(text.trim(), userMessage)
+    if (immediateReminderResult) {
+      emit({ type: 'data-changed' })
+      return immediateReminderResult
     }
 
     const immediateTaskResult = tryCreateTaskNow(text.trim(), userMessage)

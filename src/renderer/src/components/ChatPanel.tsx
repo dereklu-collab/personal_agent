@@ -79,6 +79,7 @@ export function ChatPanel({
               m.intent !== 'general_chat' &&
               m.intent !== 'generate_email' &&
               m.intent !== 'create_task' &&
+              m.intent !== 'create_reminder' &&
               m.intent !== 'schedule_app_open' && (
               <span className="intent-tag">{m.intent.replace(/_/g, ' ')}</span>
             )}
