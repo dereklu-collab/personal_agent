@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 
 // SECURITY: the assistant can only ever *name* an app. It can never supply a
 // command, arguments, or a path. We resolve that name against this fixed
@@ -98,8 +98,16 @@ export function openApp(name: string): OpenResult {
   }
   const [cmd, ...args] = argv
   try {
-    const child = spawn(cmd, args, { detached: true, stdio: 'ignore' })
-    child.unref()
+    const result = spawnSync(cmd, args, { encoding: 'utf8' })
+    if (result.error) {
+      return { ok: false, reason: result.error.message }
+    }
+    if (result.status !== 0) {
+      return {
+        ok: false,
+        reason: (result.stderr || result.stdout || `exit code ${result.status}`).trim()
+      }
+    }
     return { ok: true, label }
   } catch (err) {
     return { ok: false, reason: (err as Error).message }

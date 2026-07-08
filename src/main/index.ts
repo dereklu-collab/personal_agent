@@ -1,8 +1,8 @@
 import { app, BrowserWindow, ipcMain, screen, shell } from 'electron'
 import { join } from 'node:path'
-import type { BridgeEvent, PublicSettings } from '@shared/types'
+import type { AssistantResult, BridgeEvent, Message, PublicSettings } from '@shared/types'
 import * as db from './db'
-import { resolveApp, allowlistLabels } from './appOpener'
+import { resolveApp, allowlistLabels, openApp } from './appOpener'
 import {
   runAssistant,
   summarizeWritingProfile,
@@ -101,6 +101,52 @@ function formatEmailDraft(email: {
   if (email.subject) parts.push(`Subject: ${email.subject}`)
   parts.push('', email.body.trim())
   return parts.join('\n')
+}
+
+function hasImmediateOpenIntent(text: string): boolean {
+  const lower = text.toLowerCase()
+  const asksToOpen = /\b(open|launch|start)\b/.test(lower)
+  const isScheduled =
+    /\b(in\s+\d+|at\s+\d+|tomorrow|tonight|later|next\s+\w+|on\s+\w+day|schedule|remind)\b/.test(
+      lower
+    )
+  return asksToOpen && !isScheduled
+}
+
+function assistantFailureMessage(): string {
+  return (
+    'This request cannot be fulfilled. Autonomy cannot complete this action yet. ' +
+    'Please try rephrasing the request or use a supported command.'
+  )
+}
+
+function tryOpenAppNow(text: string, userMessage: Message): AssistantResult | null {
+  if (!hasImmediateOpenIntent(text)) return null
+
+  const label = resolveApp(text)
+  if (!label) {
+    const message =
+      'This request cannot be fulfilled. Autonomy can currently open only these apps: ' +
+      `${allowlistLabels().join(', ')}.`
+    const assistantMessage = db.addMessage('assistant', message, 'schedule_app_open')
+    return {
+      userMessage,
+      assistantMessage,
+      intent: 'schedule_app_open'
+    }
+  }
+
+  const result = openApp(label)
+  const message = result.ok
+    ? `Opening ${result.label} now.`
+    : `This request cannot be fulfilled. Autonomy could not open ${label}. ${result.reason}`
+  const assistantMessage = db.addMessage('assistant', message, 'schedule_app_open')
+  if (!result.ok) db.addLog('system', `Immediate app open failed: ${label}: ${result.reason}`)
+  return {
+    userMessage,
+    assistantMessage,
+    intent: 'schedule_app_open'
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -212,14 +258,20 @@ function registerIpc(): void {
     }
     const userMessage = db.addMessage('user', text.trim(), null)
     emit({ type: 'data-changed' })
+
+    const immediateOpenResult = tryOpenAppNow(text.trim(), userMessage)
+    if (immediateOpenResult) {
+      emit({ type: 'data-changed' })
+      return immediateOpenResult
+    }
+
     let res: Awaited<ReturnType<typeof runAssistant>>
     try {
       res = await runAssistant(text.trim())
     } catch (err) {
-      const message =
-        err instanceof Error
-          ? `I couldn't complete that request: ${err.message}`
-          : "I couldn't complete that request."
+      const detail = err instanceof Error ? err.message : 'Unknown assistant error'
+      db.addLog('system', `Assistant request failed: ${detail}`)
+      const message = assistantFailureMessage()
       const assistantMessage = db.addMessage('assistant', message, 'general_chat')
       emit({ type: 'data-changed' })
       return {
