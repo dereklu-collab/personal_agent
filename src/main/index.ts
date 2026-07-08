@@ -520,6 +520,20 @@ function parseDateFromTaskText(text: string): string | null {
   return null
 }
 
+function parseTimeOnlyUpdate(text: string, baseIso: string): string | null {
+  const time = text.match(/\b(?:to|at|for\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i)
+  if (!time) return null
+
+  const date = new Date(baseIso)
+  let hour = Number(time[1])
+  const minute = time[2] ? Number(time[2]) : 0
+  const meridiem = time[3].toLowerCase()
+  if (meridiem === 'pm' && hour < 12) hour += 12
+  if (meridiem === 'am' && hour === 12) hour = 0
+  date.setHours(hour, minute, 0, 0)
+  return Number.isNaN(date.getTime()) ? null : date.toISOString()
+}
+
 function cleanTaskTitle(text: string): string {
   let title = text
     .replace(/^\s*(hi|hey|hello)[,!]?\s+/i, '')
@@ -677,6 +691,118 @@ function tryDeleteTaskNow(text: string, userMessage: Message): AssistantResult |
   const assistantMessage = db.addMessage(
     'assistant',
     `Deleted task: ${task.title}.`,
+    'create_task'
+  )
+  return {
+    userMessage,
+    assistantMessage,
+    intent: 'create_task'
+  }
+}
+
+function isScheduleUpdateRequest(text: string): boolean {
+  return /\b(wait|actually|change|update|move|reschedule|set)\b/i.test(text) &&
+    /\b(to|at|for|tomorrow|in\s+\d+|\d{1,2}(?::\d{2})?\s*(am|pm))\b/i.test(text)
+}
+
+function lastCreatedTaskTitle(userMessage: Message): string | null {
+  const matches = db
+    .listMessages(12)
+    .filter((m) => m.id < userMessage.id && m.role === 'assistant' && m.intent === 'create_task')
+    .map((m) => m.content.match(/^Created task: (.+?)(?:\. It is due |\.?$)/i)?.[1]?.trim())
+    .filter((title): title is string => !!title)
+
+  return matches.at(-1) ?? null
+}
+
+function findTaskByTitle(title: string | null): { id: number; title: string; due: string | null } | null {
+  if (!title) return null
+  const tasks = db.listTasks()
+  const normalizedTitle = title.toLowerCase()
+  const exact = tasks.find((t) => t.title.toLowerCase() === normalizedTitle)
+  if (exact) return { id: exact.id, title: exact.title, due: exact.due }
+
+  const titleWords = normalizedWords(title)
+  if (titleWords.length === 0) return null
+  const scored = tasks
+    .map((task) => {
+      const taskWords = normalizedWords(task.title)
+      return {
+        task,
+        score: titleWords.filter((word) => taskWords.includes(word)).length
+      }
+    })
+    .filter(({ score }) => score > 0)
+    .sort((a, b) => b.score - a.score)
+
+  if (scored.length > 1 && scored[0].score === scored[1].score) return null
+  const best = scored[0]?.task
+  return best ? { id: best.id, title: best.title, due: best.due } : null
+}
+
+function lastEditedScheduleTarget(
+  userMessage: Message
+): { kind: 'reminder'; id: number; title: string; datetime: string } | { kind: 'task'; id: number; title: string; due: string | null } | null {
+  const recentAssistant = db
+    .listMessages(12)
+    .filter(
+      (m) =>
+        m.id < userMessage.id &&
+        m.role === 'assistant' &&
+        (m.intent === 'create_reminder' || m.intent === 'create_task')
+    )
+    .at(-1)
+
+  if (!recentAssistant) return null
+
+  if (recentAssistant.intent === 'create_reminder') {
+    const title = lastCreatedReminderTitle(userMessage)
+    const reminder = findActiveReminder(title)
+    if (reminder) {
+      const current = db.listReminders().find((r) => r.id === reminder.id)
+      if (current) {
+        return {
+          kind: 'reminder',
+          id: current.id,
+          title: current.title,
+          datetime: current.datetime
+        }
+      }
+    }
+  }
+
+  const task = findTaskByTitle(lastCreatedTaskTitle(userMessage))
+  return task ? { kind: 'task', ...task } : null
+}
+
+function tryUpdateLastScheduleNow(text: string, userMessage: Message): AssistantResult | null {
+  if (!isScheduleUpdateRequest(text)) return null
+
+  const target = lastEditedScheduleTarget(userMessage)
+  if (!target) return null
+
+  const base = target.kind === 'reminder' ? target.datetime : target.due ?? new Date().toISOString()
+  const updatedDate = parseDateFromTaskText(text) ?? parseTimeOnlyUpdate(text, base)
+  if (!updatedDate) return null
+
+  if (target.kind === 'reminder') {
+    db.rescheduleReminder(target.id, updatedDate)
+    const assistantMessage = db.addMessage(
+      'assistant',
+      `Updated reminder: ${target.title}. I’ll remind you ${formatReminderTime(updatedDate)}.`,
+      'create_reminder'
+    )
+    return {
+      userMessage,
+      assistantMessage,
+      intent: 'create_reminder'
+    }
+  }
+
+  db.updateTaskDue(target.id, updatedDate)
+  const assistantMessage = db.addMessage(
+    'assistant',
+    `Updated task: ${target.title}. It is due ${formatReminderTime(updatedDate)}.`,
     'create_task'
   )
   return {
@@ -1280,6 +1406,12 @@ function registerIpc(): void {
     if (immediateTaskResult) {
       emit({ type: 'data-changed' })
       return immediateTaskResult
+    }
+
+    const updateScheduleResult = tryUpdateLastScheduleNow(text.trim(), userMessage)
+    if (updateScheduleResult) {
+      emit({ type: 'data-changed' })
+      return updateScheduleResult
     }
 
     const completeReminderRemovalResult = tryCompleteReminderRemoval(text.trim(), userMessage)
