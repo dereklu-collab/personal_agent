@@ -8,6 +8,11 @@ interface KnownSite {
   aliases: string[]
 }
 
+interface ResolvedSite {
+  label: string
+  url: string
+}
+
 const BROWSERS: Record<BrowserName, string> = {
   chrome: 'Google Chrome',
   safari: 'Safari'
@@ -38,6 +43,11 @@ const KNOWN_SITES: KnownSite[] = [
     label: 'YouTube',
     url: 'https://www.youtube.com',
     aliases: ['youtube', 'you tube']
+  },
+  {
+    label: 'LinkedIn',
+    url: 'https://www.linkedin.com',
+    aliases: ['linkedin', 'linked in']
   },
   {
     label: 'ChatGPT',
@@ -76,17 +86,38 @@ export function resolveKnownSite(text: string): KnownSite | null {
   )
 }
 
+export function resolveSite(text: string): ResolvedSite | null {
+  const known = resolveKnownSite(text)
+  if (known) return known
+
+  const lower = text.toLowerCase()
+  if (!/\b(open|launch|start|go to|navigate to)\b/.test(lower)) return null
+
+  const url = lower.match(/\bhttps?:\/\/[^\s]+|\b[a-z0-9-]+\.(com|ai|io|net|org|dev)\b/i)?.[0]
+  if (url) {
+    const normalizedUrl = url.startsWith('http') ? url : `https://${url}`
+    return { label: stripUrlLabel(url), url: normalizedUrl }
+  }
+
+  const target = extractSiteTarget(text)
+  if (!target) return null
+  return {
+    label: titleCase(target),
+    url: `https://www.${target.toLowerCase()}.com`
+  }
+}
+
 export function hasBrowserSiteIntent(text: string): boolean {
   const lower = text.toLowerCase()
   const hasOpenVerb = /\b(open|launch|start|go to|navigate to)\b/.test(lower)
-  return hasOpenVerb && !!resolveKnownSite(text)
+  return hasOpenVerb && !!resolveSite(text)
 }
 
 export function openKnownSite(
   text: string,
   browser: BrowserName = resolveBrowser(text)
 ): BrowserControlResult {
-  const site = resolveKnownSite(text)
+  const site = resolveSite(text)
   if (!site) {
     return {
       ok: false,
@@ -110,4 +141,34 @@ export function openKnownSite(
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function extractSiteTarget(text: string): string | null {
+  let target = text
+    .toLowerCase()
+    .replace(/\b(open|launch|start|go to|navigate to)\b/g, ' ')
+    .replace(/\b(a|an|the|new|tab|website|site|page|application|app)\b/g, ' ')
+    .replace(/\b(in|on|with|using|inside|within|while in)\s+(google|chrome|google chrome|safari|browser)\b/g, ' ')
+    .replace(/\b(google|chrome|google chrome|safari|browser)\b/g, ' ')
+    .replace(/[^a-z0-9-.\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  if (target === 'google') return null
+  if (target.split(' ').length > 1) return null
+  if (!/^[a-z0-9-]{2,40}$/.test(target)) return null
+  return target
+}
+
+function stripUrlLabel(value: string): string {
+  return value
+    .replace(/^https?:\/\//i, '')
+    .replace(/^www\./i, '')
+    .split(/[/.]/)[0]
+    .replace(/-/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+function titleCase(value: string): string {
+  return value.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 }

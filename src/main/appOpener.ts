@@ -1,4 +1,7 @@
 import { spawnSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 
 // SECURITY: the assistant can only ever *name* an app. It can never supply a
 // command, arguments, or a path. We resolve that name against this fixed
@@ -62,18 +65,18 @@ const APPS: AppTarget[] = [
 ]
 
 export function allowlistLabels(): string[] {
-  return APPS.map((a) => a.label)
+  return installedApps().map((a) => a.label)
 }
 
 /** Resolve a free-text app name to a canonical allowlist label, or null. */
 export function resolveApp(name: string): string | null {
   const n = name.trim().toLowerCase()
-  for (const app of APPS) {
+  for (const app of installedApps()) {
     if (app.label.toLowerCase() === n) return app.label
     if (app.aliases.some((a) => a === n)) return app.label
   }
   // loose contains match as a last resort (e.g. "open chrome browser")
-  for (const app of APPS) {
+  for (const app of installedApps()) {
     if (n.includes(app.label.toLowerCase())) return app.label
     if (app.aliases.some((a) => n.includes(a))) return app.label
   }
@@ -87,6 +90,28 @@ export type OpenResult =
 function appNameForPlatform(target: AppTarget): string {
   if (process.platform === 'darwin') return target.darwin.at(-1) ?? target.label
   return target.label
+}
+
+function installedApps(): AppTarget[] {
+  return APPS.filter(isInstalled)
+}
+
+function isInstalled(target: AppTarget): boolean {
+  if (process.platform !== 'darwin') return true
+  const appName = appNameForPlatform(target)
+  const appBundle = `${appName}.app`
+  const dirs = [
+    '/Applications',
+    '/System/Applications',
+    '/System/Applications/Utilities',
+    join(homedir(), 'Applications')
+  ]
+  if (dirs.some((dir) => existsSync(join(dir, appBundle)))) return true
+
+  const result = spawnSync('mdfind', [`kMDItemFSName == "${appBundle}"`], {
+    encoding: 'utf8'
+  })
+  return result.status === 0 && result.stdout.trim().length > 0
 }
 
 /** Launch an allowlisted app. Rejects anything not on the list. */
