@@ -106,7 +106,11 @@ function registerIpc(): void {
   ipcMain.handle('settings:set', (_e, patch: unknown) => {
     const p = (patch ?? {}) as Record<string, unknown>
     const clean: Parameters<typeof db.setSettings>[0] = {}
+<<<<<<< HEAD
     if (p.provider === 'anthropic' || p.provider === 'openai')
+=======
+    if (p.provider === 'anthropic' || p.provider === 'openai' || p.provider === 'ollama')
+>>>>>>> aae2071 (Added Ollama)
       clean.provider = p.provider
     if (typeof p.model === 'string' && p.model.trim()) clean.model = p.model.trim()
     if (typeof p.apiKey === 'string') clean.apiKey = p.apiKey

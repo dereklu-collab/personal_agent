@@ -22,6 +22,11 @@ Never execute sensitive actions without confirmation.
 Never invent completed actions. If something is only scheduled, say it is scheduled.
 For emails and messages, draft the content but do not send it.`
 
+<<<<<<< HEAD
+=======
+const OLLAMA_BASE_URL = 'http://127.0.0.1:11434'
+
+>>>>>>> aae2071 (Added Ollama)
 function buildSystemPrompt(): string {
   const nowIso = new Date().toISOString()
   const apps = allowlistLabels().join(', ')
@@ -130,6 +135,50 @@ async function callOpenAI(
   return data.choices?.[0]?.message?.content ?? ''
 }
 
+<<<<<<< HEAD
+=======
+async function callOllama(
+  model: string,
+  system: string,
+  history: ChatTurn[],
+  userText: string
+): Promise<string> {
+  let res: Response
+  try {
+    res = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        stream: false,
+        format: 'json',
+        messages: [
+          { role: 'system', content: system },
+          ...history,
+          { role: 'user', content: userText }
+        ]
+      })
+    })
+  } catch {
+    throw new AssistantError(
+      `Ollama is not reachable at ${OLLAMA_BASE_URL}. Install Ollama, start it, and pull the selected model with: ollama pull ${model}`
+    )
+  }
+  if (!res.ok) {
+    const body = await res.text()
+    const missingModel = res.status === 404 || body.toLowerCase().includes('not found')
+    if (missingModel) {
+      throw new AssistantError(
+        `Ollama could not find the model "${model}". Pull it first with: ollama pull ${model}`
+      )
+    }
+    throw new Error(`Ollama API ${res.status}: ${body}`)
+  }
+  const data: any = await res.json()
+  return data.message?.content ?? data.response ?? ''
+}
+
+>>>>>>> aae2071 (Added Ollama)
 export class AssistantError extends Error {}
 
 /**
@@ -139,7 +188,11 @@ export class AssistantError extends Error {}
  */
 export async function runAssistant(userText: string): Promise<AssistantResponse> {
   const s = getRawSettings()
+<<<<<<< HEAD
   if (!s.apiKey) {
+=======
+  if (s.provider !== 'ollama' && !s.apiKey) {
+>>>>>>> aae2071 (Added Ollama)
     throw new AssistantError('No API key set. Open Settings and add your key.')
   }
   const system = buildSystemPrompt()
@@ -147,11 +200,23 @@ export async function runAssistant(userText: string): Promise<AssistantResponse>
 
   let raw: string
   try {
+<<<<<<< HEAD
     raw =
       s.provider === 'openai'
         ? await callOpenAI(s.apiKey, s.model, system, history, userText)
         : await callAnthropic(s.apiKey, s.model, system, history, userText)
   } catch (err) {
+=======
+    if (s.provider === 'openai') {
+      raw = await callOpenAI(s.apiKey, s.model, system, history, userText)
+    } else if (s.provider === 'ollama') {
+      raw = await callOllama(s.model, system, history, userText)
+    } else {
+      raw = await callAnthropic(s.apiKey, s.model, system, history, userText)
+    }
+  } catch (err) {
+    if (err instanceof AssistantError) throw err
+>>>>>>> aae2071 (Added Ollama)
     throw new AssistantError(`Couldn't reach the model: ${(err as Error).message}`)
   }
 
@@ -176,7 +241,11 @@ export async function runAssistant(userText: string): Promise<AssistantResponse>
 /** Ask the model to summarize the user's writing samples into a style profile. */
 export async function summarizeWritingProfile(samples: string[]): Promise<string> {
   const s = getRawSettings()
+<<<<<<< HEAD
   if (!s.apiKey) throw new AssistantError('No API key set.')
+=======
+  if (s.provider !== 'ollama' && !s.apiKey) throw new AssistantError('No API key set.')
+>>>>>>> aae2071 (Added Ollama)
   const system =
     'You analyze writing samples and produce a compact, reusable style profile. ' +
     'Describe tone, sentence length, formality, greetings/sign-offs, punctuation habits, ' +
@@ -186,10 +255,21 @@ export async function summarizeWritingProfile(samples: string[]): Promise<string
     .join('\n\n')
   const userText = `Here are my writing samples. Summarize my style:\n\n${joined}`
 
+<<<<<<< HEAD
   const raw =
     s.provider === 'openai'
       ? await callOpenAIPlain(s.apiKey, s.model, system, userText)
       : await callAnthropic(s.apiKey, s.model, system, [], userText)
+=======
+  let raw: string
+  if (s.provider === 'openai') {
+    raw = await callOpenAIPlain(s.apiKey, s.model, system, userText)
+  } else if (s.provider === 'ollama') {
+    raw = await callOllamaPlain(s.model, system, userText)
+  } else {
+    raw = await callAnthropic(s.apiKey, s.model, system, [], userText)
+  }
+>>>>>>> aae2071 (Added Ollama)
   return raw.trim()
 }
 
@@ -218,6 +298,47 @@ async function callOpenAIPlain(
   return data.choices?.[0]?.message?.content ?? ''
 }
 
+<<<<<<< HEAD
+=======
+async function callOllamaPlain(
+  model: string,
+  system: string,
+  userText: string
+): Promise<string> {
+  let res: Response
+  try {
+    res = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        stream: false,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: userText }
+        ]
+      })
+    })
+  } catch {
+    throw new AssistantError(
+      `Ollama is not reachable at ${OLLAMA_BASE_URL}. Install Ollama, start it, and pull the selected model with: ollama pull ${model}`
+    )
+  }
+  if (!res.ok) {
+    const body = await res.text()
+    const missingModel = res.status === 404 || body.toLowerCase().includes('not found')
+    if (missingModel) {
+      throw new AssistantError(
+        `Ollama could not find the model "${model}". Pull it first with: ollama pull ${model}`
+      )
+    }
+    throw new AssistantError(`Ollama API ${res.status}: ${body}`)
+  }
+  const data: any = await res.json()
+  return data.message?.content ?? data.response ?? ''
+}
+
+>>>>>>> aae2071 (Added Ollama)
 /**
  * Transcribe audio bytes via OpenAI Whisper. Uses the dedicated transcribe key
  * if set, otherwise the main API key (only valid when provider is OpenAI).

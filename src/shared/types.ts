@@ -10,7 +10,11 @@ export type Intent =
   | 'update_writing_style'
   | 'summarize_plan'
 
+<<<<<<< HEAD
 export type Provider = 'anthropic' | 'openai'
+=======
+export type Provider = 'anthropic' | 'openai' | 'ollama'
+>>>>>>> aae2071 (Added Ollama)
 
 export type Recurrence = 'none' | 'daily' | 'weekly' | 'monthly'
 

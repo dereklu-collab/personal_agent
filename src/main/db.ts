@@ -99,6 +99,15 @@ const SETTINGS_DEFAULTS: RawSettings = {
   onboarded: false
 }
 
+<<<<<<< HEAD
+=======
+function parseProvider(value: string | undefined): Provider {
+  return value === 'openai' || value === 'ollama' || value === 'anthropic'
+    ? value
+    : SETTINGS_DEFAULTS.provider
+}
+
+>>>>>>> aae2071 (Added Ollama)
 export function getRawSettings(): RawSettings {
   const rows = db.prepare('SELECT key, value FROM settings').all() as {
     key: string
@@ -106,7 +115,11 @@ export function getRawSettings(): RawSettings {
   }[]
   const map = new Map(rows.map((r) => [r.key, r.value]))
   return {
+<<<<<<< HEAD
     provider: (map.get('provider') as Provider) ?? SETTINGS_DEFAULTS.provider,
+=======
+    provider: parseProvider(map.get('provider')),
+>>>>>>> aae2071 (Added Ollama)
     model: map.get('model') ?? SETTINGS_DEFAULTS.model,
     apiKey: map.get('apiKey') ?? '',
     transcribeKey: map.get('transcribeKey') ?? '',
