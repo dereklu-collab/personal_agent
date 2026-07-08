@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process'
 
 type BrowserName = 'chrome' | 'safari'
+type BrowserSiteActionKind = 'open' | 'close'
 
 interface KnownSite {
   label: string
@@ -8,8 +9,15 @@ interface KnownSite {
   aliases: string[]
 }
 
-interface ResolvedSite {
+export interface ResolvedSite {
   label: string
+  url: string
+}
+
+export interface BrowserSiteAction {
+  kind: BrowserSiteActionKind
+  browser: string
+  site: string
   url: string
 }
 
@@ -66,6 +74,8 @@ const KNOWN_SITES: KnownSite[] = [
   }
 ]
 
+const BROWSER_ACTION_NOTE_PREFIX = 'browser-action:'
+
 export type BrowserControlResult =
   | { ok: true; browser: string; site: string; url: string }
   | { ok: false; reason: string }
@@ -75,6 +85,10 @@ export function resolveBrowser(text: string): BrowserName {
   if (/\bsafari\b/.test(lower)) return 'safari'
   if (/\b(google|chrome|google chrome)\b/.test(lower)) return 'chrome'
   return 'chrome'
+}
+
+export function browserLabelForText(text: string): string {
+  return BROWSERS[resolveBrowser(text)]
 }
 
 export function resolveKnownSite(text: string): KnownSite | null {
@@ -204,6 +218,52 @@ export function closeKnownSite(
   }
 
   return { ok: true, browser: appName, site: site.label, url: site.url }
+}
+
+export function browserSiteActionFromText(
+  text: string,
+  kind: BrowserSiteActionKind
+): BrowserSiteAction | null {
+  const site = kind === 'close' ? resolveSiteForClose(text) : resolveSite(text)
+  if (!site) return null
+  return {
+    kind,
+    browser: browserLabelForText(text),
+    site: site.label,
+    url: site.url
+  }
+}
+
+export function encodeBrowserActionNote(action: BrowserSiteAction): string {
+  return `${BROWSER_ACTION_NOTE_PREFIX}${JSON.stringify(action)}`
+}
+
+export function decodeBrowserActionNote(note: string | null): BrowserSiteAction | null {
+  if (!note?.startsWith(BROWSER_ACTION_NOTE_PREFIX)) return null
+  try {
+    const value = JSON.parse(note.slice(BROWSER_ACTION_NOTE_PREFIX.length)) as Partial<BrowserSiteAction>
+    if (
+      (value.kind === 'open' || value.kind === 'close') &&
+      typeof value.browser === 'string' &&
+      typeof value.site === 'string' &&
+      typeof value.url === 'string'
+    ) {
+      return {
+        kind: value.kind,
+        browser: value.browser,
+        site: value.site,
+        url: value.url
+      }
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+export function runBrowserSiteAction(action: BrowserSiteAction): BrowserControlResult {
+  const text = `${action.kind} ${action.url} in ${action.browser}`
+  return action.kind === 'close' ? closeKnownSite(text) : openKnownSite(text)
 }
 
 function escapeRegex(value: string): string {

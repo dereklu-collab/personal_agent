@@ -15,6 +15,32 @@ import { Onboarding } from './components/Onboarding'
 
 type Tab = 'chat' | 'tasks' | 'style' | 'settings'
 
+function actionPrompt(action: ScheduledAction): { prompt: string; button: string } {
+  if (action.note?.startsWith('browser-action:')) {
+    try {
+      const value = JSON.parse(action.note.slice('browser-action:'.length)) as {
+        kind?: unknown
+        site?: unknown
+        browser?: unknown
+      }
+      if (
+        (value.kind === 'open' || value.kind === 'close') &&
+        typeof value.site === 'string' &&
+        typeof value.browser === 'string'
+      ) {
+        const verb = value.kind === 'open' ? 'Open' : 'Close'
+        return {
+          prompt: `${verb} ${value.site} in ${value.browser} now?`,
+          button: verb
+        }
+      }
+    } catch {
+      // Use the default app prompt below.
+    }
+  }
+  return { prompt: `Open ${action.app} now?`, button: 'Open' }
+}
+
 export default function App() {
   const [settings, setSettings] = useState<PublicSettings | null>(null)
   const [allowlist, setAllowlist] = useState<string[]>([])
@@ -165,7 +191,7 @@ export default function App() {
           <div className="body">
             {confirmAction && (
               <div className="banner confirm">
-                <span className="grow">Open {confirmAction.app} now?</span>
+                <span className="grow">{actionPrompt(confirmAction).prompt}</span>
                 <button
                   className="mini primary"
                   onClick={async () => {
@@ -174,7 +200,7 @@ export default function App() {
                     await refreshLists()
                   }}
                 >
-                  Open
+                  {actionPrompt(confirmAction).button}
                 </button>
                 <button
                   className="mini"

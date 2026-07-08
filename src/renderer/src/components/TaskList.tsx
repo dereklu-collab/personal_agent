@@ -42,9 +42,45 @@ function fromDateTimeInput(value: string): string | null {
 
 function actionStatusText(action: ScheduledAction): string {
   if (action.status === 'pending') return 'Needs approval'
-  if (action.status === 'approved') return 'Will auto-open'
+  if (action.status === 'approved') return browserAction(action) ? 'Will auto-run' : 'Will auto-open'
   if (action.status === 'awaiting_confirm') return 'Ready now'
   return action.status.replace(/_/g, ' ')
+}
+
+function browserAction(action: ScheduledAction): {
+  kind: 'open' | 'close'
+  site: string
+  browser: string
+} | null {
+  if (!action.note?.startsWith('browser-action:')) return null
+  try {
+    const value = JSON.parse(action.note.slice('browser-action:'.length)) as {
+      kind?: unknown
+      site?: unknown
+      browser?: unknown
+    }
+    if (
+      (value.kind === 'open' || value.kind === 'close') &&
+      typeof value.site === 'string' &&
+      typeof value.browser === 'string'
+    ) {
+      return { kind: value.kind, site: value.site, browser: value.browser }
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+function actionTitle(action: ScheduledAction): string {
+  const browser = browserAction(action)
+  if (!browser) return `Open ${action.app}`
+  const verb = browser.kind === 'open' ? 'Open' : 'Close'
+  return `${verb} ${browser.site} in ${browser.browser}`
+}
+
+function actionNote(action: ScheduledAction): string | null {
+  return browserAction(action) ? null : action.note
 }
 
 export function TaskList({
@@ -138,14 +174,14 @@ export function TaskList({
 
       {actions.length > 0 && (
         <div>
-          <p className="section-title">Scheduled apps</p>
+          <p className="section-title">Scheduled actions</p>
           {actions.map((a) => (
             <div key={a.id} className="card action-card">
               <div className="grow">
-                <div className="primary">Open {a.app}</div>
+                <div className="primary">{actionTitle(a)}</div>
                 <div className="meta">
                   {when(a.datetime)}
-                  {a.note && ` · ${a.note}`}
+                  {actionNote(a) && ` · ${actionNote(a)}`}
                 </div>
               </div>
               <span className={`status-chip ${a.status}`}>

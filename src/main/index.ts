@@ -4,7 +4,9 @@ import type { AssistantResult, BridgeEvent, Message, PublicSettings } from '@sha
 import * as db from './db'
 import { resolveApp, allowlistLabels, openApp, closeApp } from './appOpener'
 import {
+  browserSiteActionFromText,
   closeKnownSite,
+  encodeBrowserActionNote,
   hasBrowserSiteCloseIntent,
   hasBrowserSiteIntent,
   openKnownSite
@@ -319,6 +321,87 @@ function tryCompletePendingReminder(text: string, userMessage: Message): Assista
   }
 }
 
+function isReminderRemovalRequest(text: string): boolean {
+  return /\b(remove|delete|cancel|dismiss|clear)\b/i.test(text) && /\b(reminder|that|it)\b/i.test(text)
+}
+
+function cleanReminderRemovalTitle(text: string): string {
+  return text
+    .replace(/^\s*(hi|hey|hello)[,!]?\s+/i, '')
+    .replace(/\b(can you|could you|please|for me)\b/gi, ' ')
+    .replace(/\b(remove|delete|cancel|dismiss|clear)\b/gi, ' ')
+    .replace(/\b(a|an|the|that|this|it)\b/gi, ' ')
+    .replace(/\b(reminder|alert|notification)\b/gi, ' ')
+    .replace(/^(to|for|about)\s+/i, '')
+    .replace(/[?.!,]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function lastCreatedReminderTitle(userMessage: Message): string | null {
+  const previousAssistant = db
+    .listMessages(12)
+    .filter(
+      (m) =>
+        m.id < userMessage.id &&
+        m.role === 'assistant' &&
+        m.intent === 'create_reminder'
+    )
+    .at(-1)
+
+  const match = previousAssistant?.content.match(/^Reminder set: (.+?)\. I’ll remind you /i)
+  return match?.[1]?.trim() ?? null
+}
+
+function findActiveReminder(title: string | null): { id: number; title: string } | null {
+  const reminders = db.listReminders()
+  if (!title) return null
+
+  const normalizedTitle = title.toLowerCase()
+  const exact = reminders.find((r) => r.title.toLowerCase() === normalizedTitle)
+  if (exact) return { id: exact.id, title: exact.title }
+
+  const fuzzy = reminders.find((r) => {
+    const reminderTitle = r.title.toLowerCase()
+    return reminderTitle.includes(normalizedTitle) || normalizedTitle.includes(reminderTitle)
+  })
+  return fuzzy ? { id: fuzzy.id, title: fuzzy.title } : null
+}
+
+function tryRemoveReminderNow(text: string, userMessage: Message): AssistantResult | null {
+  if (!isReminderRemovalRequest(text)) return null
+
+  const typedTitle = cleanReminderRemovalTitle(text)
+  const contextTitle = /^(that|this|it)?\s*(reminder)?$/i.test(typedTitle)
+    ? lastCreatedReminderTitle(userMessage)
+    : typedTitle
+  const reminder = findActiveReminder(contextTitle || lastCreatedReminderTitle(userMessage))
+
+  if (!reminder) {
+    const message = contextTitle
+      ? `I couldn't find an active reminder for ${contextTitle}.`
+      : 'Which reminder should I remove?'
+    const assistantMessage = db.addMessage('assistant', message, 'create_reminder')
+    return {
+      userMessage,
+      assistantMessage,
+      intent: 'create_reminder'
+    }
+  }
+
+  db.dismissReminder(reminder.id)
+  const assistantMessage = db.addMessage(
+    'assistant',
+    `Removed reminder: ${reminder.title}.`,
+    'create_reminder'
+  )
+  return {
+    userMessage,
+    assistantMessage,
+    intent: 'create_reminder'
+  }
+}
+
 function tryCreateReminderNow(text: string, userMessage: Message): AssistantResult | null {
   if (!isReminderRequest(text)) return null
   const datetime = parseDateFromTaskText(text)
@@ -441,6 +524,36 @@ function tryBrowserSiteClose(text: string, userMessage: Message): AssistantResul
     assistantMessage,
     intent: 'schedule_app_open'
   }
+}
+
+function tryScheduleBrowserSiteAction(text: string, userMessage: Message): AssistantResult | null {
+  const datetime = parseRelativeDate(text)
+  if (!datetime) return null
+
+  const lower = text.toLowerCase()
+  const kind = /\b(close|quit|exit|shut)\b/.test(lower)
+    ? 'close'
+    : /\b(open|launch|start|go to|navigate to)\b/.test(lower)
+      ? 'open'
+      : null
+  if (!kind) return null
+
+  const action = browserSiteActionFromText(text, kind)
+  if (!action) return null
+
+  db.addScheduledAction(action.browser, datetime, 'approved', encodeBrowserActionNote(action))
+  const when = new Date(datetime).toLocaleTimeString([], {
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit'
+  })
+  const verb = action.kind === 'open' ? 'open' : 'close'
+  const assistantMessage = db.addMessage(
+    'assistant',
+    `Scheduled ${action.site} to ${verb} in ${action.browser} at ${when}.`,
+    'schedule_app_open'
+  )
+  return { userMessage, assistantMessage, intent: 'schedule_app_open' }
 }
 
 function tryScheduleAppOpen(text: string, userMessage: Message): AssistantResult | null {
@@ -583,6 +696,12 @@ function registerIpc(): void {
     const userMessage = db.addMessage('user', text.trim(), null)
     emit({ type: 'data-changed' })
 
+    const scheduledBrowserResult = tryScheduleBrowserSiteAction(text.trim(), userMessage)
+    if (scheduledBrowserResult) {
+      emit({ type: 'data-changed' })
+      return scheduledBrowserResult
+    }
+
     const scheduledOpenResult = tryScheduleAppOpen(text.trim(), userMessage)
     if (scheduledOpenResult) {
       emit({ type: 'data-changed' })
@@ -611,6 +730,12 @@ function registerIpc(): void {
     if (immediateOpenResult) {
       emit({ type: 'data-changed' })
       return immediateOpenResult
+    }
+
+    const removeReminderResult = tryRemoveReminderNow(text.trim(), userMessage)
+    if (removeReminderResult) {
+      emit({ type: 'data-changed' })
+      return removeReminderResult
     }
 
     const pendingReminderResult = tryCompletePendingReminder(text.trim(), userMessage)
