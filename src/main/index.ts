@@ -120,6 +120,88 @@ function assistantFailureMessage(): string {
   )
 }
 
+function parseDateFromTaskText(text: string): string | null {
+  const numeric = text.match(
+    /\b(?:on\s+)?(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?)?/i
+  )
+  if (numeric) {
+    const month = Number(numeric[1])
+    const day = Number(numeric[2])
+    const rawYear = Number(numeric[3])
+    const year = rawYear < 100 ? 2000 + rawYear : rawYear
+    let hour = numeric[4] ? Number(numeric[4]) : 9
+    const minute = numeric[5] ? Number(numeric[5]) : 0
+    const meridiem = numeric[6]?.toLowerCase()
+    if (meridiem === 'pm' && hour < 12) hour += 12
+    if (meridiem === 'am' && hour === 12) hour = 0
+    const date = new Date(year, month - 1, day, hour, minute)
+    return Number.isNaN(date.getTime()) ? null : date.toISOString()
+  }
+
+  const tomorrow = text.match(
+    /\btomorrow(?:\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?)?/i
+  )
+  if (tomorrow) {
+    const date = new Date()
+    date.setDate(date.getDate() + 1)
+    let hour = tomorrow[1] ? Number(tomorrow[1]) : 9
+    const minute = tomorrow[2] ? Number(tomorrow[2]) : 0
+    const meridiem = tomorrow[3]?.toLowerCase()
+    if (meridiem === 'pm' && hour < 12) hour += 12
+    if (meridiem === 'am' && hour === 12) hour = 0
+    date.setHours(hour, minute, 0, 0)
+    return date.toISOString()
+  }
+
+  return null
+}
+
+function cleanTaskTitle(text: string): string {
+  return text
+    .replace(/\b(?:on\s+)?\d{1,2}\/\d{1,2}\/\d{2,4}(?:\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/gi, '')
+    .replace(/\btomorrow(?:\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/gi, '')
+    .replace(/^(please\s+)?(create|add|make)\s+(a\s+)?(new\s+)?(task|todo|to-do)\s*/i, '')
+    .replace(/^(please\s+)?(create|add|make)\s+(a\s+)?(new\s+)?(task|todo|to-do)\s+(to|for|called|named)\s*/i, '')
+    .replace(/^(please\s+)?schedule\s+(a\s+)?/i, '')
+    .replace(/^(to|for|called|named)\s+/i, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function isTaskRequest(text: string): boolean {
+  const lower = text.toLowerCase()
+  if (/\b(open|launch|start)\b/.test(lower) && resolveApp(text)) return false
+  return (
+    /\b(create|add|make)\s+(a\s+)?(new\s+)?(task|todo|to-do)\b/.test(lower) ||
+    /\bschedule\b/.test(lower)
+  )
+}
+
+function tryCreateTaskNow(text: string, userMessage: Message): AssistantResult | null {
+  if (!isTaskRequest(text)) return null
+  const title = cleanTaskTitle(text)
+  if (!title || /^(it|this|that)(\s+as\s+(a\s+)?task)?$/i.test(title)) return null
+
+  const due = parseDateFromTaskText(text)
+  db.addTask(title, due)
+  const dueText = due ? ` It is due ${new Date(due).toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  })}.` : ''
+  const assistantMessage = db.addMessage(
+    'assistant',
+    `Created task: ${title}.${dueText}`,
+    'create_task'
+  )
+  return {
+    userMessage,
+    assistantMessage,
+    intent: 'create_task'
+  }
+}
+
 function tryOpenAppNow(text: string, userMessage: Message): AssistantResult | null {
   if (!hasImmediateOpenIntent(text)) return null
 
@@ -263,6 +345,12 @@ function registerIpc(): void {
     if (immediateOpenResult) {
       emit({ type: 'data-changed' })
       return immediateOpenResult
+    }
+
+    const immediateTaskResult = tryCreateTaskNow(text.trim(), userMessage)
+    if (immediateTaskResult) {
+      emit({ type: 'data-changed' })
+      return immediateTaskResult
     }
 
     let res: Awaited<ReturnType<typeof runAssistant>>

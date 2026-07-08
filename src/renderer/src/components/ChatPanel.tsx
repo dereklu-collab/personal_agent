@@ -63,7 +63,10 @@ export function ChatPanel({
 
         {messages.map((m) => (
           <div key={m.id} className={`msg ${m.role}`}>
-            {m.role === 'assistant' && m.intent && m.intent !== 'general_chat' && (
+            {m.role === 'assistant' &&
+              m.intent &&
+              m.intent !== 'general_chat' &&
+              m.intent !== 'generate_email' && (
               <span className="intent-tag">{m.intent.replace(/_/g, ' ')}</span>
             )}
             {m.content}

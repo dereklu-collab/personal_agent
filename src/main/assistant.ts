@@ -30,7 +30,7 @@ function buildSystemPrompt(): string {
   const apps = allowlistLabels().join(', ')
   const profile = getWritingProfile()
   const writingBlock = profile
-    ? `\n\nThe user's saved writing style profile (use it when drafting emails/messages):\n${profile.summary}`
+    ? `\n\nThe user's saved writing style profile (use it strongly when drafting emails/messages). Match the user's tone, greeting style, sentence rhythm, punctuation, and preferred sign-off if one is present:\n${profile.summary}`
     : ''
 
   return `${BASE_SYSTEM_PROMPT}
@@ -51,7 +51,7 @@ OUTPUT FORMAT: Respond with ONLY a single JSON object, no markdown, no code fenc
 }
 Valid intent values are: general_chat, create_task, create_reminder, schedule_app_open, generate_email, update_writing_style, summarize_plan.
 Choose exactly one intent value. Never combine intent values with "|" or commas.
-Only include "email" for generate_email. Do not include "email" for tasks, reminders, scheduled app launches, plans, or general chat. For generate_email, put the complete copy-and-pasteable draft in email.body and make response a short intro such as "Here's a draft you can copy and paste." Do not ask whether to send it. Use empty arrays when nothing applies. "response" is always required.`
+Only include "email" for generate_email. Do not include "email" for tasks, reminders, scheduled app launches, plans, or general chat. For generate_email, write a complete copy-and-pasteable email in email.body with a greeting, body, and closing/sign-off. Use the saved writing profile's sign-off when available; otherwise use a natural sign-off such as "Best regards,". Make response a short intro such as "Here is a draft you can copy and paste." Do not ask whether to send it. Use empty arrays when nothing applies. "response" is always required.`
 }
 
 interface ChatTurn {
