@@ -53,7 +53,7 @@ OUTPUT FORMAT: Respond with ONLY a single JSON object, no markdown, no code fenc
 }
 Valid intent values are: general_chat, create_task, create_reminder, schedule_app_open, generate_email, update_writing_style, summarize_plan.
 Choose exactly one intent value. Never combine intent values with "|" or commas.
-Only include "email" for generate_email. Do not include "email" for tasks, reminders, scheduled app launches, plans, or general chat. For generate_email, write a complete copy-and-pasteable email in email.body with a greeting, body, and closing/sign-off. Use the saved writing profile's sign-off when available; otherwise use a natural sign-off such as "Best regards,". Make response a short intro such as "Here is a draft you can copy and paste." Do not ask whether to send it. Use empty arrays when nothing applies. "response" is always required.`
+Only include "email" for generate_email. Do not include "email" for tasks, reminders, scheduled app launches, plans, or general chat. For generate_email, write a complete copy-and-pasteable email in email.body with a greeting, body, and closing/sign-off. Use only the user's current email request unless they explicitly reference prior context with words like "that", "this", "previous", or "the meeting". Never create tasks, reminders, or scheduled actions while drafting an email. Use the saved writing profile's sign-off when available; otherwise use a natural sign-off such as "Best regards,". Make response a short intro such as "Here is a draft you can copy and paste." Do not ask whether to send it. Use empty arrays when nothing applies. "response" is always required.`
 }
 
 interface ChatTurn {
@@ -64,6 +64,26 @@ interface ChatTurn {
 function recentHistory(): ChatTurn[] {
   // last handful of turns for context; keep it short to control token use
   return listMessages(20).map((m) => ({ role: m.role, content: m.content }))
+}
+
+function isEmailDraftRequest(text: string): boolean {
+  return (
+    /\b(write|draft|compose|generate|create)\b.*\b(e-?mail|message|reply)\b/i.test(text) ||
+    /\b(e-?mail|message|reply)\s+to\b/i.test(text)
+  )
+}
+
+function referencesPriorContext(text: string): boolean {
+  return /\b(that|this|it|previous|above|earlier|last|same|the meeting|that meeting|the task|that task|the reminder|that reminder)\b/i.test(
+    text
+  )
+}
+
+function historyForRequest(userText: string): ChatTurn[] {
+  if (isEmailDraftRequest(userText) && !referencesPriorContext(userText)) {
+    return []
+  }
+  return recentHistory()
 }
 
 function stripFences(text: string): string {
@@ -162,6 +182,9 @@ function normalizeAssistantPayload(payload: unknown): unknown {
       next = {
         ...next,
         response: 'Here is a draft you can copy and paste.',
+        tasks: [],
+        reminders: [],
+        scheduledActions: [],
         email: {
           ...email,
           body
@@ -394,7 +417,7 @@ export async function runAssistant(userText: string): Promise<AssistantResponse>
     throw new AssistantError('No API key set. Open Settings and add your key.')
   }
   const system = buildSystemPrompt()
-  const history = recentHistory()
+  const history = historyForRequest(userText)
 
   let raw: string
   try {
@@ -445,6 +468,20 @@ export async function summarizeWritingProfile(samples: string[]): Promise<string
   } else {
     raw = await callAnthropic(s.apiKey, s.model, system, [], userText)
   }
+  return raw.trim()
+}
+
+/** Summarize user-provided text as a plain chat skill, without side effects. */
+export async function summarizeText(text: string): Promise<string> {
+  const s = getRawSettings()
+  if (s.provider !== 'ollama' && !s.apiKey) {
+    throw new AssistantError('No API key set. Open Settings and add your key.')
+  }
+  const system =
+    'You summarize user-provided text clearly and concisely. Preserve important names, dates, decisions, and action items. ' +
+    'Return only the summary in plain text. Do not create tasks, reminders, emails, or scheduled actions.'
+  const userText = `Summarize this text:\n\n${text}`
+  const raw = await callConfiguredPlainModel(s, system, userText)
   return raw.trim()
 }
 

@@ -13,6 +13,7 @@ import {
 } from './browserControl'
 import {
   runAssistant,
+  summarizeText,
   summarizeWritingProfile,
   transcribeAudio,
   AssistantError
@@ -144,6 +145,255 @@ function assistantFailureMessage(): string {
     'This request cannot be fulfilled. AI Assistant cannot complete this action yet. ' +
     'Please try rephrasing the request or use a supported command.'
   )
+}
+
+function addBasicAssistantMessage(
+  userMessage: Message,
+  content: string
+): AssistantResult {
+  const assistantMessage = db.addMessage('assistant', content, 'general_chat')
+  return {
+    userMessage,
+    assistantMessage,
+    intent: 'general_chat'
+  }
+}
+
+function tryTellTimeNow(text: string, userMessage: Message): AssistantResult | null {
+  const lower = text.toLowerCase()
+  const isTimeRequest =
+    /\b(what'?s|what is|tell me|current|local)\b.*\b(time|date|day)\b/.test(lower) ||
+    /\b(time|date) now\b/.test(lower)
+  if (!isTimeRequest) return null
+
+  const tz = timeZoneForText(text)
+  const now = new Date()
+  const formatted = new Intl.DateTimeFormat([], {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    timeZone: tz.timeZone
+  }).format(now)
+  const suffix = tz.label ? ` in ${tz.label}` : ''
+  return addBasicAssistantMessage(userMessage, `It is ${formatted}${suffix}.`)
+}
+
+function timeZoneForText(text: string): { timeZone: string; label: string | null } {
+  const lower = text.toLowerCase()
+  if (/\b(nyc|new york|brooklyn|manhattan)\b/.test(lower)) {
+    return { timeZone: 'America/New_York', label: 'New York' }
+  }
+  if (/\b(la|los angeles)\b/.test(lower)) {
+    return { timeZone: 'America/Los_Angeles', label: 'Los Angeles' }
+  }
+  if (/\b(chicago)\b/.test(lower)) {
+    return { timeZone: 'America/Chicago', label: 'Chicago' }
+  }
+  if (/\b(london)\b/.test(lower)) {
+    return { timeZone: 'Europe/London', label: 'London' }
+  }
+  return {
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    label: null
+  }
+}
+
+function isWeatherRequest(text: string): boolean {
+  return /\b(weather|temperature|forecast)\b/i.test(text)
+}
+
+function extractWeatherLocation(text: string): string | null {
+  const cleaned = text
+    .replace(/[?.!,]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  const explicit = cleaned.match(/\b(?:in|for|at|near)\s+(.+)$/i)
+  let location = explicit?.[1]?.trim()
+
+  if (!location) {
+    location = cleaned
+      .replace(/\b(what'?s|what is|how'?s|how is|tell me|show me|give me|current|today'?s|today|right now|now)\b/gi, ' ')
+      .replace(/\b(the|weather|temperature|forecast|like|outside|conditions)\b/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+  }
+
+  location = location
+    .replace(/\b(today|right now|now|currently|outside)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  if (!location || /^(here|outside|today|now|right now)$/i.test(location)) return null
+  if (/^(nyc|new york city)$/i.test(location)) return 'New York City'
+  if (/^(la)$/i.test(location)) return 'Los Angeles'
+  return location
+}
+
+function weatherDescription(code: number): string {
+  if (code === 0) return 'clear'
+  if ([1, 2, 3].includes(code)) return 'partly cloudy'
+  if ([45, 48].includes(code)) return 'foggy'
+  if ([51, 53, 55, 56, 57].includes(code)) return 'drizzly'
+  if ([61, 63, 65, 66, 67, 80, 81, 82].includes(code)) return 'rainy'
+  if ([71, 73, 75, 77, 85, 86].includes(code)) return 'snowy'
+  if ([95, 96, 99].includes(code)) return 'stormy'
+  return 'mixed'
+}
+
+async function tryWeatherNow(
+  text: string,
+  userMessage: Message
+): Promise<AssistantResult | null> {
+  if (!isWeatherRequest(text)) return null
+
+  const location = extractWeatherLocation(text)
+  if (!location) {
+    return addBasicAssistantMessage(
+      userMessage,
+      'Which city should I check the weather for?'
+    )
+  }
+
+  try {
+    const geoUrl =
+      'https://geocoding-api.open-meteo.com/v1/search?' +
+      new URLSearchParams({
+        name: location,
+        count: '1',
+        language: 'en',
+        format: 'json'
+      }).toString()
+    const geoRes = await fetch(geoUrl)
+    if (!geoRes.ok) throw new Error(`Geocoding API ${geoRes.status}`)
+    const geoData = (await geoRes.json()) as {
+      results?: {
+        name: string
+        admin1?: string
+        country?: string
+        latitude: number
+        longitude: number
+      }[]
+    }
+    const match = geoData.results?.[0]
+    if (!match) {
+      return addBasicAssistantMessage(
+        userMessage,
+        `I couldn't find a weather location for "${location}".`
+      )
+    }
+
+    const weatherUrl =
+      'https://api.open-meteo.com/v1/forecast?' +
+      new URLSearchParams({
+        latitude: String(match.latitude),
+        longitude: String(match.longitude),
+        current:
+          'temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m',
+        temperature_unit: 'fahrenheit',
+        wind_speed_unit: 'mph',
+        precipitation_unit: 'inch',
+        timezone: 'auto'
+      }).toString()
+    const weatherRes = await fetch(weatherUrl)
+    if (!weatherRes.ok) throw new Error(`Weather API ${weatherRes.status}`)
+    const weatherData = (await weatherRes.json()) as {
+      current?: {
+        temperature_2m?: number
+        apparent_temperature?: number
+        relative_humidity_2m?: number
+        precipitation?: number
+        weather_code?: number
+        wind_speed_10m?: number
+      }
+    }
+    const current = weatherData.current
+    if (!current || typeof current.temperature_2m !== 'number') {
+      throw new Error('Missing current weather data')
+    }
+
+    const place = [match.name, match.admin1, match.country].filter(Boolean).join(', ')
+    const description =
+      typeof current.weather_code === 'number' ? weatherDescription(current.weather_code) : 'current'
+    const feels =
+      typeof current.apparent_temperature === 'number'
+        ? `, feels like ${Math.round(current.apparent_temperature)}°F`
+        : ''
+    const humidity =
+      typeof current.relative_humidity_2m === 'number'
+        ? ` Humidity is ${Math.round(current.relative_humidity_2m)}%.`
+        : ''
+    const wind =
+      typeof current.wind_speed_10m === 'number'
+        ? ` Wind is ${Math.round(current.wind_speed_10m)} mph.`
+        : ''
+    const precip =
+      typeof current.precipitation === 'number' && current.precipitation > 0
+        ? ` Precipitation is ${current.precipitation.toFixed(2)} in.`
+        : ''
+
+    return addBasicAssistantMessage(
+      userMessage,
+      `The weather in ${place} is ${description} and ${Math.round(
+        current.temperature_2m
+      )}°F${feels}.${humidity}${wind}${precip}`
+    )
+  } catch (err) {
+    db.addLog('system', `Weather lookup failed: ${(err as Error).message}`)
+    return addBasicAssistantMessage(
+      userMessage,
+      `I couldn't retrieve the current weather for ${location} right now.`
+    )
+  }
+}
+
+function isSummarizeTextRequest(text: string): boolean {
+  const lower = text.toLowerCase()
+  if (!/\b(summarize|summarise|summary|sum up|tl;dr|tldr)\b/.test(lower)) return false
+  return !/\b(plan|plans|today|daily)\b/.test(lower)
+}
+
+function extractTextToSummarize(text: string): string | null {
+  const trimmed = text.trim()
+  const colon = trimmed.match(/\b(?:summarize|summarise|sum up|tl;dr|tldr)\b[^:]*:\s*([\s\S]+)/i)
+  let body = colon?.[1]?.trim()
+
+  if (!body) {
+    body = trimmed
+      .replace(/^\s*(please\s+)?(?:can you\s+|could you\s+)?(?:summarize|summarise|sum up|tl;dr|tldr)\s*/i, '')
+      .replace(/^(this|the following|this text|this passage|this paragraph|this article)\s*/i, '')
+      .trim()
+  }
+
+  if (!body || /^(this|this text|a text|the text|it)$/i.test(body)) return null
+  if (body.length < 20) return null
+  return body
+}
+
+async function trySummarizeTextNow(
+  text: string,
+  userMessage: Message
+): Promise<AssistantResult | null> {
+  if (!isSummarizeTextRequest(text)) return null
+
+  const textToSummarize = extractTextToSummarize(text)
+  if (!textToSummarize) {
+    return addBasicAssistantMessage(
+      userMessage,
+      'Paste the text you want summarized after the request, like: "summarize: ...".'
+    )
+  }
+
+  try {
+    const summary = await summarizeText(textToSummarize)
+    return addBasicAssistantMessage(userMessage, summary || 'I could not produce a summary.')
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : 'Unknown summary error'
+    db.addLog('system', `Summary request failed: ${detail}`)
+    return addBasicAssistantMessage(
+      userMessage,
+      'I could not summarize that text right now. Check your model settings and try again.'
+    )
+  }
 }
 
 function parseDateFromTaskText(text: string): string | null {
@@ -696,6 +946,24 @@ function registerIpc(): void {
     const userMessage = db.addMessage('user', text.trim(), null)
     emit({ type: 'data-changed' })
 
+    const timeResult = tryTellTimeNow(text.trim(), userMessage)
+    if (timeResult) {
+      emit({ type: 'data-changed' })
+      return timeResult
+    }
+
+    const weatherResult = await tryWeatherNow(text.trim(), userMessage)
+    if (weatherResult) {
+      emit({ type: 'data-changed' })
+      return weatherResult
+    }
+
+    const summaryResult = await trySummarizeTextNow(text.trim(), userMessage)
+    if (summaryResult) {
+      emit({ type: 'data-changed' })
+      return summaryResult
+    }
+
     const scheduledBrowserResult = tryScheduleBrowserSiteAction(text.trim(), userMessage)
     if (scheduledBrowserResult) {
       emit({ type: 'data-changed' })
@@ -774,12 +1042,19 @@ function registerIpc(): void {
 
     // Persist any structured side effects the model asked for.
     const s = db.getRawSettings()
-    for (const t of res.tasks) db.addTask(t.title, t.due ?? null)
-    for (const r of res.reminders)
+    const tasksToCreate =
+      res.intent === 'create_task' || res.intent === 'summarize_plan' ? res.tasks : []
+    const remindersToCreate =
+      res.intent === 'create_reminder' || res.intent === 'summarize_plan' ? res.reminders : []
+    const scheduledActionsToCreate =
+      res.intent === 'schedule_app_open' ? res.scheduledActions : []
+
+    for (const t of tasksToCreate) db.addTask(t.title, t.due ?? null)
+    for (const r of remindersToCreate)
       db.addReminder(r.title, r.datetime, r.recurrence)
 
     const rejected: string[] = []
-    for (const sa of res.scheduledActions) {
+    for (const sa of scheduledActionsToCreate) {
       const label = resolveApp(sa.app)
       if (!label) {
         rejected.push(sa.app)
