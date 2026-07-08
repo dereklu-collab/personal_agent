@@ -19,7 +19,7 @@ interface AppTarget {
 const APPS: AppTarget[] = [
   {
     label: 'Google Chrome',
-    aliases: ['chrome', 'google chrome'],
+    aliases: ['chrome', 'google', 'google chrome'],
     darwin: ['open', '-a', 'Google Chrome'],
     win32: ['cmd', '/c', 'start', '', 'chrome'],
     linux: ['google-chrome']
@@ -84,6 +84,11 @@ export type OpenResult =
   | { ok: true; label: string }
   | { ok: false; reason: string }
 
+function appNameForPlatform(target: AppTarget): string {
+  if (process.platform === 'darwin') return target.darwin.at(-1) ?? target.label
+  return target.label
+}
+
 /** Launch an allowlisted app. Rejects anything not on the list. */
 export function openApp(name: string): OpenResult {
   const label = resolveApp(name)
@@ -109,6 +114,36 @@ export function openApp(name: string): OpenResult {
       }
     }
     return { ok: true, label }
+  } catch (err) {
+    return { ok: false, reason: (err as Error).message }
+  }
+}
+
+/** Quit an allowlisted app. Rejects anything not on the list. */
+export function closeApp(name: string): OpenResult {
+  const label = resolveApp(name)
+  if (!label) {
+    return { ok: false, reason: `"${name}" is not on the allowed-apps list.` }
+  }
+
+  const target = APPS.find((a) => a.label === label)!
+  try {
+    if (process.platform === 'darwin') {
+      const appName = appNameForPlatform(target)
+      const result = spawnSync('osascript', ['-e', `tell application "${appName}" to quit`], {
+        encoding: 'utf8'
+      })
+      if (result.error) return { ok: false, reason: result.error.message }
+      if (result.status !== 0) {
+        return {
+          ok: false,
+          reason: (result.stderr || result.stdout || `exit code ${result.status}`).trim()
+        }
+      }
+      return { ok: true, label }
+    }
+
+    return { ok: false, reason: `${label} close control is only configured for macOS.` }
   } catch (err) {
     return { ok: false, reason: (err as Error).message }
   }

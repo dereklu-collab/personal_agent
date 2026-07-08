@@ -2,7 +2,8 @@ import { app, BrowserWindow, ipcMain, screen, shell } from 'electron'
 import { join } from 'node:path'
 import type { AssistantResult, BridgeEvent, Message, PublicSettings } from '@shared/types'
 import * as db from './db'
-import { resolveApp, allowlistLabels, openApp } from './appOpener'
+import { resolveApp, allowlistLabels, openApp, closeApp } from './appOpener'
+import { hasBrowserSiteIntent, openKnownSite } from './browserControl'
 import {
   runAssistant,
   summarizeWritingProfile,
@@ -262,6 +263,52 @@ function tryOpenAppNow(text: string, userMessage: Message): AssistantResult | nu
   }
 }
 
+function tryCloseAppNow(text: string, userMessage: Message): AssistantResult | null {
+  const lower = text.toLowerCase()
+  if (!/\b(close|quit|exit|shut)\b/.test(lower)) return null
+
+  const label = resolveApp(text)
+  if (!label) {
+    const message =
+      'This request cannot be fulfilled. Autonomy can currently close only these apps: ' +
+      `${allowlistLabels().join(', ')}.`
+    const assistantMessage = db.addMessage('assistant', message, 'schedule_app_open')
+    return {
+      userMessage,
+      assistantMessage,
+      intent: 'schedule_app_open'
+    }
+  }
+
+  const result = closeApp(label)
+  const message = result.ok
+    ? `Closing ${result.label}.`
+    : `This request cannot be fulfilled. Autonomy could not close ${label}. ${result.reason}`
+  const assistantMessage = db.addMessage('assistant', message, 'schedule_app_open')
+  if (!result.ok) db.addLog('system', `Immediate app close failed: ${label}: ${result.reason}`)
+  return {
+    userMessage,
+    assistantMessage,
+    intent: 'schedule_app_open'
+  }
+}
+
+function tryBrowserSiteOpen(text: string, userMessage: Message): AssistantResult | null {
+  if (!hasBrowserSiteIntent(text)) return null
+
+  const result = openKnownSite(text)
+  const message = result.ok
+    ? `Opening ${result.site} in ${result.browser}.`
+    : `This request cannot be fulfilled. ${result.reason}`
+  const assistantMessage = db.addMessage('assistant', message, 'schedule_app_open')
+  if (!result.ok) db.addLog('system', `Browser action failed: ${result.reason}`)
+  return {
+    userMessage,
+    assistantMessage,
+    intent: 'schedule_app_open'
+  }
+}
+
 function tryScheduleAppOpen(text: string, userMessage: Message): AssistantResult | null {
   const lower = text.toLowerCase()
   if (!/\b(open|launch|start)\b/.test(lower)) return null
@@ -406,6 +453,18 @@ function registerIpc(): void {
     if (scheduledOpenResult) {
       emit({ type: 'data-changed' })
       return scheduledOpenResult
+    }
+
+    const closeAppResult = tryCloseAppNow(text.trim(), userMessage)
+    if (closeAppResult) {
+      emit({ type: 'data-changed' })
+      return closeAppResult
+    }
+
+    const browserSiteResult = tryBrowserSiteOpen(text.trim(), userMessage)
+    if (browserSiteResult) {
+      emit({ type: 'data-changed' })
+      return browserSiteResult
     }
 
     const immediateOpenResult = tryOpenAppNow(text.trim(), userMessage)
