@@ -369,6 +369,44 @@ function extractTextToSummarize(text: string): string | null {
   return body
 }
 
+function extractFirstUrl(text: string): string | null {
+  const match = text.match(/\bhttps?:\/\/[^\s<>"')]+/i)
+  return match?.[0] ?? null
+}
+
+function stripHtmlForSummary(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<nav[\s\S]*?<\/nav>/gi, ' ')
+    .replace(/<header[\s\S]*?<\/header>/gi, ' ')
+    .replace(/<footer[\s\S]*?<\/footer>/gi, ' ')
+    .replace(/<aside[\s\S]*?<\/aside>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+async function fetchArticleText(url: string): Promise<string> {
+  const res = await fetch(url, {
+    headers: {
+      'user-agent': 'AI Assistant desktop app'
+    }
+  })
+  if (!res.ok) throw new Error(`Article fetch ${res.status}`)
+  const contentType = res.headers.get('content-type') ?? ''
+  const raw = await res.text()
+  const text = contentType.includes('html') ? stripHtmlForSummary(raw) : raw.replace(/\s+/g, ' ').trim()
+  if (text.length < 100) throw new Error('Article text was too short to summarize')
+  return text.slice(0, 24_000)
+}
+
 async function trySummarizeTextNow(
   text: string,
   userMessage: Message
@@ -376,22 +414,26 @@ async function trySummarizeTextNow(
   if (!isSummarizeTextRequest(text)) return null
 
   const textToSummarize = extractTextToSummarize(text)
-  if (!textToSummarize) {
+  const articleUrl = extractFirstUrl(text)
+  if (!textToSummarize && !articleUrl) {
     return addBasicAssistantMessage(
       userMessage,
-      'Paste the text you want summarized after the request, like: "summarize: ...".'
+      'Paste the text or article URL you want summarized, like: "summarize: ..."'
     )
   }
 
   try {
-    const summary = await summarizeText(textToSummarize)
+    const input = articleUrl ? await fetchArticleText(articleUrl) : textToSummarize!
+    const summary = await summarizeText(input)
     return addBasicAssistantMessage(userMessage, summary || 'I could not produce a summary.')
   } catch (err) {
     const detail = err instanceof Error ? err.message : 'Unknown summary error'
     db.addLog('system', `Summary request failed: ${detail}`)
     return addBasicAssistantMessage(
       userMessage,
-      'I could not summarize that text right now. Check your model settings and try again.'
+      articleUrl
+        ? 'I could not retrieve and summarize that article right now. Try pasting the article text instead.'
+        : 'I could not summarize that text right now. Check your model settings and try again.'
     )
   }
 }
@@ -852,12 +894,12 @@ function tryRemoveReminderNow(text: string, userMessage: Message): AssistantResu
 }
 
 function tryCompleteReminderRemoval(text: string, userMessage: Message): AssistantResult | null {
-  const hasReminderReference = /\b(reminder|that|it)\b/i.test(text)
-  if (!hasPendingReminderRemoval(userMessage) && !hasReminderReference) return null
+  if (!hasPendingReminderRemoval(userMessage)) return null
+  if (isReminderRequest(text) || isTaskRequest(text)) return null
 
   const typedTitle = cleanReminderRemovalTitle(text)
   const title = typedTitle || previousReminderRemovalTitle(userMessage) || lastCreatedReminderTitle(userMessage)
-  if (!title && !hasPendingReminderRemoval(userMessage)) return null
+  if (!title) return null
 
   return removeReminderByTitle(title || null, userMessage)
 }
@@ -1222,18 +1264,6 @@ function registerIpc(): void {
       return removeReminderResult
     }
 
-    const completeReminderRemovalResult = tryCompleteReminderRemoval(text.trim(), userMessage)
-    if (completeReminderRemovalResult) {
-      emit({ type: 'data-changed' })
-      return completeReminderRemovalResult
-    }
-
-    const deleteTaskResult = tryDeleteTaskNow(text.trim(), userMessage)
-    if (deleteTaskResult) {
-      emit({ type: 'data-changed' })
-      return deleteTaskResult
-    }
-
     const pendingReminderResult = tryCompletePendingReminder(text.trim(), userMessage)
     if (pendingReminderResult) {
       emit({ type: 'data-changed' })
@@ -1250,6 +1280,18 @@ function registerIpc(): void {
     if (immediateTaskResult) {
       emit({ type: 'data-changed' })
       return immediateTaskResult
+    }
+
+    const completeReminderRemovalResult = tryCompleteReminderRemoval(text.trim(), userMessage)
+    if (completeReminderRemovalResult) {
+      emit({ type: 'data-changed' })
+      return completeReminderRemovalResult
+    }
+
+    const deleteTaskResult = tryDeleteTaskNow(text.trim(), userMessage)
+    if (deleteTaskResult) {
+      emit({ type: 'data-changed' })
+      return deleteTaskResult
     }
 
     let res: Awaited<ReturnType<typeof runAssistant>>
