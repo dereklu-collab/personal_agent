@@ -4,7 +4,7 @@ import type { BridgeEvent, Recurrence } from '@shared/types'
 import * as db from './db'
 import { openApp } from './appOpener'
 
-const TICK_MS = 15_000
+const TICK_MS = 1_000
 let timer: NodeJS.Timeout | null = null
 
 function nextOccurrence(iso: string, recurrence: Recurrence): string | null {

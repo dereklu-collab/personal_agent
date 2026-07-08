@@ -113,6 +113,22 @@ function hasImmediateOpenIntent(text: string): boolean {
   return asksToOpen && !isScheduled
 }
 
+function parseRelativeDate(text: string): string | null {
+  const relative = text.match(
+    /\bin\s+(\d+)\s*(second|seconds|sec|secs|minute|minutes|min|hour|hours|hr|hrs|day|days)\b/i
+  )
+  if (!relative) return null
+  const amount = Number(relative[1])
+  const unit = relative[2].toLowerCase()
+  const date = new Date()
+  if (unit.startsWith('sec')) date.setSeconds(date.getSeconds() + amount)
+  else if (unit.startsWith('min')) date.setMinutes(date.getMinutes() + amount)
+  else if (unit.startsWith('hour') || unit === 'hr' || unit === 'hrs') {
+    date.setHours(date.getHours() + amount)
+  } else if (unit.startsWith('day')) date.setDate(date.getDate() + amount)
+  return date.toISOString()
+}
+
 function assistantFailureMessage(): string {
   return (
     'This request cannot be fulfilled. Autonomy cannot complete this action yet. ' +
@@ -121,17 +137,8 @@ function assistantFailureMessage(): string {
 }
 
 function parseDateFromTaskText(text: string): string | null {
-  const relative = text.match(/\bin\s+(\d+)\s*(minute|minutes|min|hour|hours|hr|hrs|day|days)\b/i)
-  if (relative) {
-    const amount = Number(relative[1])
-    const unit = relative[2].toLowerCase()
-    const date = new Date()
-    if (unit.startsWith('min')) date.setMinutes(date.getMinutes() + amount)
-    else if (unit.startsWith('hour') || unit === 'hr' || unit === 'hrs') {
-      date.setHours(date.getHours() + amount)
-    } else if (unit.startsWith('day')) date.setDate(date.getDate() + amount)
-    return date.toISOString()
-  }
+  const relative = parseRelativeDate(text)
+  if (relative) return relative
 
   const numeric = text.match(
     /\b(?:on\s+)?(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?)?/i
@@ -255,6 +262,36 @@ function tryOpenAppNow(text: string, userMessage: Message): AssistantResult | nu
   }
 }
 
+function tryScheduleAppOpen(text: string, userMessage: Message): AssistantResult | null {
+  const lower = text.toLowerCase()
+  if (!/\b(open|launch|start)\b/.test(lower)) return null
+
+  const datetime = parseRelativeDate(text)
+  if (!datetime) return null
+
+  const label = resolveApp(text)
+  if (!label) {
+    const message =
+      'This request cannot be fulfilled. Autonomy can currently schedule only these apps: ' +
+      `${allowlistLabels().join(', ')}.`
+    const assistantMessage = db.addMessage('assistant', message, 'schedule_app_open')
+    return { userMessage, assistantMessage, intent: 'schedule_app_open' }
+  }
+
+  db.addScheduledAction(label, datetime, 'approved', `Requested from chat: ${text}`)
+  const when = new Date(datetime).toLocaleTimeString([], {
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit'
+  })
+  const assistantMessage = db.addMessage(
+    'assistant',
+    `Scheduled ${label} to open at ${when}.`,
+    'schedule_app_open'
+  )
+  return { userMessage, assistantMessage, intent: 'schedule_app_open' }
+}
+
 // ---------------------------------------------------------------------------
 // IPC: every renderer request is validated here before touching state.
 // ---------------------------------------------------------------------------
@@ -364,6 +401,12 @@ function registerIpc(): void {
     }
     const userMessage = db.addMessage('user', text.trim(), null)
     emit({ type: 'data-changed' })
+
+    const scheduledOpenResult = tryScheduleAppOpen(text.trim(), userMessage)
+    if (scheduledOpenResult) {
+      emit({ type: 'data-changed' })
+      return scheduledOpenResult
+    }
 
     const immediateOpenResult = tryOpenAppNow(text.trim(), userMessage)
     if (immediateOpenResult) {
