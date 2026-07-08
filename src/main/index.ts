@@ -701,8 +701,36 @@ function tryDeleteTaskNow(text: string, userMessage: Message): AssistantResult |
 }
 
 function isScheduleUpdateRequest(text: string): boolean {
-  return /\b(wait|actually|change|update|move|reschedule|set)\b/i.test(text) &&
+  return /\b(wait|actually|change|update|move|reschedule|set|edit)\b/i.test(text) &&
     /\b(to|at|for|tomorrow|in\s+\d+|\d{1,2}(?::\d{2})?\s*(am|pm))\b/i.test(text)
+}
+
+function scheduleUpdateKind(text: string): 'reminder' | 'task' | null {
+  if (/\breminder\b/i.test(text)) return 'reminder'
+  if (/\b(task|todo|to-do)\b/i.test(text)) return 'task'
+  return null
+}
+
+function cleanScheduleUpdateTitle(text: string): string | null {
+  const explicit = text.match(/\b(?:reminder|task|todo|to-do)\s+(?:to|for|about|called|named)\s+([\s\S]+?)(?:\s+(?:and\s+)?(?:set|change|update|move|reschedule)\b|\s+\b(?:to|at)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|$)/i)
+  let title = explicit?.[1]?.trim()
+
+  if (!title) {
+    const generic = text.match(/\b(?:edit|change|update|move|reschedule)\s+([\s\S]+?)(?:\s+(?:and\s+)?(?:set|change|update|move|reschedule)\b|\s+\b(?:to|at)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|$)/i)
+    title = generic?.[1]?.trim()
+  }
+
+  if (!title) return null
+  title = title
+    .replace(/\b(the|a|an|reminder|task|todo|to-do)\b/gi, ' ')
+    .replace(/\bin\s+\d+\s*(second|seconds|sec|secs|minute|minutes|min|hour|hours|hr|hrs|day|days)\b/gi, ' ')
+    .replace(/\b(?:on\s+)?\d{1,2}\/\d{1,2}\/\d{2,4}(?:\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/gi, ' ')
+    .replace(/\btomorrow(?:\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/gi, ' ')
+    .replace(/\b(and|then)$/i, ' ')
+    .replace(/[?.!,]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return title || null
 }
 
 function lastCreatedTaskTitle(userMessage: Message): string | null {
@@ -775,10 +803,40 @@ function lastEditedScheduleTarget(
   return task ? { kind: 'task', ...task } : null
 }
 
+function namedScheduleTarget(
+  text: string
+): { kind: 'reminder'; id: number; title: string; datetime: string } | { kind: 'task'; id: number; title: string; due: string | null } | null {
+  const title = cleanScheduleUpdateTitle(text)
+  if (!title) return null
+
+  const kind = scheduleUpdateKind(text)
+  if (kind !== 'task') {
+    const reminder = findActiveReminder(title)
+    if (reminder) {
+      const current = db.listReminders().find((r) => r.id === reminder.id)
+      if (current) {
+        return {
+          kind: 'reminder',
+          id: current.id,
+          title: current.title,
+          datetime: current.datetime
+        }
+      }
+    }
+  }
+
+  if (kind !== 'reminder') {
+    const task = findTaskByTitle(title)
+    if (task) return { kind: 'task', ...task }
+  }
+
+  return null
+}
+
 function tryUpdateLastScheduleNow(text: string, userMessage: Message): AssistantResult | null {
   if (!isScheduleUpdateRequest(text)) return null
 
-  const target = lastEditedScheduleTarget(userMessage)
+  const target = namedScheduleTarget(text) ?? lastEditedScheduleTarget(userMessage)
   if (!target) return null
 
   const base = target.kind === 'reminder' ? target.datetime : target.due ?? new Date().toISOString()
