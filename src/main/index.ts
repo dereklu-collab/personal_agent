@@ -493,6 +493,114 @@ function tryCreateTaskNow(text: string, userMessage: Message): AssistantResult |
   }
 }
 
+function isTaskRemovalRequest(text: string): boolean {
+  const lower = text.toLowerCase()
+  if (!/\b(remove|delete|cancel|clear)\b/.test(lower)) return false
+  if (/\b(reminder|alert|notification)\b/.test(lower)) return false
+  return /\b(task|todo|to-do|meeting|appointment|call|event|it|that)\b/.test(lower)
+}
+
+function cleanTaskRemovalTitle(text: string): string {
+  let title = text
+    .replace(/^\s*(hi|hey|hello)[,!]?\s+/i, '')
+    .replace(/\b(can you|could you|please|for me|i meant|i mean)\b/gi, ' ')
+    .replace(/\b(remove|delete|cancel|clear)\b/gi, ' ')
+    .replace(/\b(a|an|the|that|this|it)\b/gi, ' ')
+    .replace(/\b(task|todo|to-do)\b/gi, ' ')
+    .replace(/\bi\s+(set up|created|scheduled|made|added)\b/gi, ' ')
+    .replace(/\b(set up|created|scheduled|made|added)\b/gi, ' ')
+    .replace(/\bfor myself\b/gi, ' ')
+    .replace(/[?.!,]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  title = title.replace(/\bfor\s+([A-Z][a-z]+)$/i, 'with $1')
+  const meetingWith = title.match(/\bmeeting\b(?:\s+with)?\s+(.+)$/i)
+  if (meetingWith) title = `Meeting with ${meetingWith[1].trim()}`
+  return title
+}
+
+function normalizedWords(value: string): string[] {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((word) => word.length > 1 && !['the', 'for', 'with'].includes(word))
+}
+
+function findTaskToDelete(title: string | null): { id: number; title: string } | null {
+  if (!title) return null
+  const tasks = db.listTasks()
+  const normalizedTitle = title.toLowerCase()
+  const exact = tasks.find((t) => t.title.toLowerCase() === normalizedTitle)
+  if (exact) return { id: exact.id, title: exact.title }
+
+  const titleWords = normalizedWords(title)
+  if (titleWords.length === 0) return null
+
+  const scored = tasks
+    .map((task) => {
+      const taskTitle = task.title.toLowerCase()
+      const taskWords = normalizedWords(task.title)
+      const wordMatches = titleWords.filter((word) => taskWords.includes(word)).length
+      const containsScore =
+        taskTitle.includes(normalizedTitle) || normalizedTitle.includes(taskTitle) ? 2 : 0
+      return { task, score: wordMatches + containsScore }
+    })
+    .filter(({ score }) => score > 0)
+    .sort((a, b) => b.score - a.score)
+
+  if (scored.length > 1 && scored[0].score === scored[1].score) return null
+
+  const best = scored[0]?.task
+  return best ? { id: best.id, title: best.title } : null
+}
+
+function previousTaskRemovalTitle(userMessage: Message): string | null {
+  const previousUser = db
+    .listMessages(10)
+    .filter((m) => m.id < userMessage.id && m.role === 'user')
+    .reverse()
+    .find((m) => isTaskRemovalRequest(m.content))
+
+  const title = previousUser ? cleanTaskRemovalTitle(previousUser.content) : ''
+  return title || null
+}
+
+function tryDeleteTaskNow(text: string, userMessage: Message): AssistantResult | null {
+  if (!isTaskRemovalRequest(text)) return null
+
+  let title = cleanTaskRemovalTitle(text)
+  if (!title || /^(task|todo|to-do)$/i.test(title)) {
+    title = previousTaskRemovalTitle(userMessage) ?? ''
+  }
+
+  const task = findTaskToDelete(title || null)
+  if (!task) {
+    const message = title
+      ? `I couldn't find a task matching ${title}.`
+      : 'Which task should I delete?'
+    const assistantMessage = db.addMessage('assistant', message, 'create_task')
+    return {
+      userMessage,
+      assistantMessage,
+      intent: 'create_task'
+    }
+  }
+
+  db.deleteTask(task.id)
+  const assistantMessage = db.addMessage(
+    'assistant',
+    `Deleted task: ${task.title}.`,
+    'create_task'
+  )
+  return {
+    userMessage,
+    assistantMessage,
+    intent: 'create_task'
+  }
+}
+
 function cleanReminderTitle(text: string): string {
   return text
     .replace(/^\s*(hi|hey|hello)[,!]?\s+/i, '')
@@ -1004,6 +1112,12 @@ function registerIpc(): void {
     if (removeReminderResult) {
       emit({ type: 'data-changed' })
       return removeReminderResult
+    }
+
+    const deleteTaskResult = tryDeleteTaskNow(text.trim(), userMessage)
+    if (deleteTaskResult) {
+      emit({ type: 'data-changed' })
+      return deleteTaskResult
     }
 
     const pendingReminderResult = tryCompletePendingReminder(text.trim(), userMessage)
