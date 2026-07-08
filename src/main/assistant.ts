@@ -1,4 +1,5 @@
 import { assistantResponseSchema, type AssistantResponse } from '@shared/schemas'
+import type { Intent } from '@shared/types'
 import { allowlistLabels } from './appOpener'
 import { getRawSettings, listMessages, getWritingProfile } from './db'
 
@@ -41,13 +42,15 @@ APP CONTROL: you may only schedule opening apps from this exact allowlist: ${app
 
 OUTPUT FORMAT: Respond with ONLY a single JSON object, no markdown, no code fences, no prose outside the JSON. Shape:
 {
-  "intent": "general_chat | create_task | create_reminder | schedule_app_open | generate_email | update_writing_style | summarize_plan",
+  "intent": "generate_email",
   "response": "natural-language reply to show the user",
   "tasks": [ { "title": "string", "due": "ISO or null" } ],
   "reminders": [ { "title": "string", "datetime": "ISO", "recurrence": "none|daily|weekly|monthly" } ],
   "scheduledActions": [ { "app": "allowlisted app name", "datetime": "ISO", "note": "optional" } ],
   "email": { "to": "optional", "subject": "optional", "body": "the draft" }
 }
+Valid intent values are: general_chat, create_task, create_reminder, schedule_app_open, generate_email, update_writing_style, summarize_plan.
+Choose exactly one intent value. Never combine intent values with "|" or commas.
 Only include "email" for generate_email. For generate_email, put the complete copy-and-pasteable draft in email.body and make response a short intro such as "Here's a draft you can copy and paste." Do not ask whether to send it. Use empty arrays when nothing applies. "response" is always required.`
 }
 
@@ -71,6 +74,49 @@ function stripFences(text: string): string {
   const last = t.lastIndexOf('}')
   if (first > 0 && last > first) t = t.slice(first, last + 1)
   return t
+}
+
+const VALID_INTENTS: Intent[] = [
+  'general_chat',
+  'create_task',
+  'create_reminder',
+  'schedule_app_open',
+  'generate_email',
+  'update_writing_style',
+  'summarize_plan'
+]
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function hasItems(value: unknown): boolean {
+  return Array.isArray(value) && value.length > 0
+}
+
+function normalizeIntent(payload: unknown): unknown {
+  if (!isRecord(payload)) return payload
+  const intent = payload.intent
+  if (typeof intent !== 'string' || VALID_INTENTS.includes(intent as Intent)) {
+    return payload
+  }
+
+  const candidates = VALID_INTENTS.filter((value) => intent.includes(value))
+  let normalized: Intent | null = null
+
+  if (isRecord(payload.email) || candidates.includes('generate_email')) {
+    normalized = 'generate_email'
+  } else if (hasItems(payload.scheduledActions)) {
+    normalized = 'schedule_app_open'
+  } else if (hasItems(payload.reminders)) {
+    normalized = 'create_reminder'
+  } else if (hasItems(payload.tasks)) {
+    normalized = 'create_task'
+  } else {
+    normalized = candidates.find((value) => value !== 'general_chat') ?? 'general_chat'
+  }
+
+  return { ...payload, intent: normalized }
 }
 
 async function callAnthropic(
@@ -204,7 +250,7 @@ export async function runAssistant(userText: string): Promise<AssistantResponse>
 
   let parsed: unknown
   try {
-    parsed = JSON.parse(stripFences(raw))
+    parsed = normalizeIntent(JSON.parse(stripFences(raw)))
   } catch {
     throw new AssistantError('The model returned something that was not valid JSON.')
   }
