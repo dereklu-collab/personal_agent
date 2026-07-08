@@ -266,6 +266,7 @@ function registerIpc(): void {
 
 app.whenReady().then(() => {
   db.initDb()
+  db.clearMessages()
   registerIpc()
   createWindow()
   startScheduler(() => win)

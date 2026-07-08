@@ -51,7 +51,7 @@ OUTPUT FORMAT: Respond with ONLY a single JSON object, no markdown, no code fenc
 }
 Valid intent values are: general_chat, create_task, create_reminder, schedule_app_open, generate_email, update_writing_style, summarize_plan.
 Choose exactly one intent value. Never combine intent values with "|" or commas.
-Only include "email" for generate_email. For generate_email, put the complete copy-and-pasteable draft in email.body and make response a short intro such as "Here's a draft you can copy and paste." Do not ask whether to send it. Use empty arrays when nothing applies. "response" is always required.`
+Only include "email" for generate_email. Do not include "email" for tasks, reminders, scheduled app launches, plans, or general chat. For generate_email, put the complete copy-and-pasteable draft in email.body and make response a short intro such as "Here's a draft you can copy and paste." Do not ask whether to send it. Use empty arrays when nothing applies. "response" is always required.`
 }
 
 interface ChatTurn {
@@ -101,23 +101,27 @@ function firstString(...values: unknown[]): string | null {
   return null
 }
 
+function intentFromSideEffects(payload: Record<string, unknown>): Intent | null {
+  if (hasItems(payload.scheduledActions)) return 'schedule_app_open'
+  if (hasItems(payload.reminders)) return 'create_reminder'
+  if (hasItems(payload.tasks)) return 'create_task'
+  return null
+}
+
 function normalizeAssistantPayload(payload: unknown): unknown {
   if (!isRecord(payload)) return payload
   const intent = payload.intent
   let next = { ...payload }
+  const sideEffectIntent = intentFromSideEffects(payload)
 
   if (typeof intent === 'string' && !VALID_INTENTS.includes(intent as Intent)) {
     const candidates = VALID_INTENTS.filter((value) => intent.includes(value))
     let normalized: Intent | null = null
 
-    if (isRecord(payload.email) || candidates.includes('generate_email')) {
+    if (sideEffectIntent) {
+      normalized = sideEffectIntent
+    } else if (isRecord(payload.email) || candidates.includes('generate_email')) {
       normalized = 'generate_email'
-    } else if (hasItems(payload.scheduledActions)) {
-      normalized = 'schedule_app_open'
-    } else if (hasItems(payload.reminders)) {
-      normalized = 'create_reminder'
-    } else if (hasItems(payload.tasks)) {
-      normalized = 'create_task'
     } else {
       normalized = candidates.find((value) => value !== 'general_chat') ?? 'general_chat'
     }
@@ -127,6 +131,21 @@ function normalizeAssistantPayload(payload: unknown): unknown {
 
   if (next.intent === 'generate_email') {
     const email = isRecord(next.email) ? next.email : {}
+    const hasEmailLikeDraft = firstString(
+      email.body,
+      email.draft,
+      email.content,
+      email.text,
+      next.emailBody,
+      next.draft
+    )
+
+    if (!hasEmailLikeDraft && sideEffectIntent) {
+      const rest = { ...next }
+      delete rest.email
+      return { ...rest, intent: sideEffectIntent }
+    }
+
     const body = firstString(
       email.body,
       email.draft,
@@ -134,7 +153,7 @@ function normalizeAssistantPayload(payload: unknown): unknown {
       email.text,
       next.emailBody,
       next.draft,
-      next.response
+      sideEffectIntent ? null : next.response
     )
 
     if (body) {
