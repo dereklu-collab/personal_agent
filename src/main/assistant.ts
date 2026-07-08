@@ -94,29 +94,62 @@ function hasItems(value: unknown): boolean {
   return Array.isArray(value) && value.length > 0
 }
 
-function normalizeIntent(payload: unknown): unknown {
+function firstString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return null
+}
+
+function normalizeAssistantPayload(payload: unknown): unknown {
   if (!isRecord(payload)) return payload
   const intent = payload.intent
-  if (typeof intent !== 'string' || VALID_INTENTS.includes(intent as Intent)) {
-    return payload
+  let next = { ...payload }
+
+  if (typeof intent === 'string' && !VALID_INTENTS.includes(intent as Intent)) {
+    const candidates = VALID_INTENTS.filter((value) => intent.includes(value))
+    let normalized: Intent | null = null
+
+    if (isRecord(payload.email) || candidates.includes('generate_email')) {
+      normalized = 'generate_email'
+    } else if (hasItems(payload.scheduledActions)) {
+      normalized = 'schedule_app_open'
+    } else if (hasItems(payload.reminders)) {
+      normalized = 'create_reminder'
+    } else if (hasItems(payload.tasks)) {
+      normalized = 'create_task'
+    } else {
+      normalized = candidates.find((value) => value !== 'general_chat') ?? 'general_chat'
+    }
+
+    next = { ...next, intent: normalized }
   }
 
-  const candidates = VALID_INTENTS.filter((value) => intent.includes(value))
-  let normalized: Intent | null = null
+  if (next.intent === 'generate_email') {
+    const email = isRecord(next.email) ? next.email : {}
+    const body = firstString(
+      email.body,
+      email.draft,
+      email.content,
+      email.text,
+      next.emailBody,
+      next.draft,
+      next.response
+    )
 
-  if (isRecord(payload.email) || candidates.includes('generate_email')) {
-    normalized = 'generate_email'
-  } else if (hasItems(payload.scheduledActions)) {
-    normalized = 'schedule_app_open'
-  } else if (hasItems(payload.reminders)) {
-    normalized = 'create_reminder'
-  } else if (hasItems(payload.tasks)) {
-    normalized = 'create_task'
-  } else {
-    normalized = candidates.find((value) => value !== 'general_chat') ?? 'general_chat'
+    if (body) {
+      next = {
+        ...next,
+        response: 'Here is a draft you can copy and paste.',
+        email: {
+          ...email,
+          body
+        }
+      }
+    }
   }
 
-  return { ...payload, intent: normalized }
+  return next
 }
 
 async function callAnthropic(
@@ -250,7 +283,7 @@ export async function runAssistant(userText: string): Promise<AssistantResponse>
 
   let parsed: unknown
   try {
-    parsed = normalizeIntent(JSON.parse(stripFences(raw)))
+    parsed = normalizeAssistantPayload(JSON.parse(stripFences(raw)))
   } catch {
     throw new AssistantError('The model returned something that was not valid JSON.')
   }

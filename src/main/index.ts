@@ -205,6 +205,7 @@ function registerIpc(): void {
       throw new AssistantError('Empty message.')
     }
     const userMessage = db.addMessage('user', text.trim(), null)
+    emit({ type: 'data-changed' })
     const res = await runAssistant(text.trim())
 
     // Persist any structured side effects the model asked for.
