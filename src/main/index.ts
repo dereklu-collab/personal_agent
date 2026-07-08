@@ -250,6 +250,7 @@ function cleanReminderTitle(text: string): string {
     .replace(/^(please\s+)?(set|create|add|make)\s+(a\s+)?(new\s+)?reminder\s*/i, '')
     .replace(/^remind\s+me\s*/i, '')
     .replace(/^(to|for|about)\s+/i, '')
+    .replace(/^(a|an|the)\s+/i, '')
     .replace(/\s+(for me|for myself)\b/gi, '')
     .replace(/\s+/g, ' ')
     .trim()
@@ -261,24 +262,87 @@ function isReminderRequest(text: string): boolean {
   )
 }
 
-function tryCreateReminderNow(text: string, userMessage: Message): AssistantResult | null {
-  if (!isReminderRequest(text)) return null
-  const datetime = parseDateFromTaskText(text)
-  if (!datetime) return null
-
-  const title = cleanReminderTitle(text)
-  if (!title || /^(it|this|that)$/i.test(title)) return null
-
-  db.addReminder(title, datetime, 'none')
-  const when = new Date(datetime).toLocaleString([], {
+function formatReminderTime(datetime: string): string {
+  return new Date(datetime).toLocaleString([], {
     month: 'short',
     day: 'numeric',
     hour: 'numeric',
     minute: '2-digit'
   })
+}
+
+function pendingReminderTitle(userMessage: Message): string | null {
+  const previousAssistant = db
+    .listMessages(8)
+    .filter(
+      (m) =>
+        m.id < userMessage.id &&
+        m.role === 'assistant' &&
+        m.intent === 'create_reminder'
+    )
+    .at(-1)
+
+  const match = previousAssistant?.content.match(/^When should I remind you about (.+)\?$/i)
+  return match?.[1]?.trim() ?? null
+}
+
+function tryCompletePendingReminder(text: string, userMessage: Message): AssistantResult | null {
+  if (isReminderRequest(text)) return null
+
+  const title = pendingReminderTitle(userMessage)
+  if (!title) return null
+
+  const datetime = parseDateFromTaskText(text)
+  if (!datetime) {
+    const assistantMessage = db.addMessage(
+      'assistant',
+      `I still need a date or time for ${title}.`,
+      'create_reminder'
+    )
+    return {
+      userMessage,
+      assistantMessage,
+      intent: 'create_reminder'
+    }
+  }
+
+  db.addReminder(title, datetime, 'none')
   const assistantMessage = db.addMessage(
     'assistant',
-    `Reminder set: ${title}. I’ll remind you ${when}.`,
+    `Reminder set: ${title}. I’ll remind you ${formatReminderTime(datetime)}.`,
+    'create_reminder'
+  )
+  return {
+    userMessage,
+    assistantMessage,
+    intent: 'create_reminder'
+  }
+}
+
+function tryCreateReminderNow(text: string, userMessage: Message): AssistantResult | null {
+  if (!isReminderRequest(text)) return null
+  const datetime = parseDateFromTaskText(text)
+  let title = cleanReminderTitle(text)
+  if (/^(it|this|that)$/i.test(title)) title = ''
+
+  if (!datetime) {
+    const message = title
+      ? `When should I remind you about ${title}?`
+      : 'What should I remind you about, and when?'
+    const assistantMessage = db.addMessage('assistant', message, 'create_reminder')
+    return {
+      userMessage,
+      assistantMessage,
+      intent: 'create_reminder'
+    }
+  }
+
+  if (!title) title = 'Reminder'
+
+  db.addReminder(title, datetime, 'none')
+  const assistantMessage = db.addMessage(
+    'assistant',
+    `Reminder set: ${title}. I’ll remind you ${formatReminderTime(datetime)}.`,
     'create_reminder'
   )
   return {
@@ -547,6 +611,12 @@ function registerIpc(): void {
     if (immediateOpenResult) {
       emit({ type: 'data-changed' })
       return immediateOpenResult
+    }
+
+    const pendingReminderResult = tryCompletePendingReminder(text.trim(), userMessage)
+    if (pendingReminderResult) {
+      emit({ type: 'data-changed' })
+      return pendingReminderResult
     }
 
     const immediateReminderResult = tryCreateReminderNow(text.trim(), userMessage)
