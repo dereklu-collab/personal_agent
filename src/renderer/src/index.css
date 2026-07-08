@@ -377,6 +377,35 @@ button {
   color: var(--text-dim);
   margin-top: 2px;
 }
+.due-editor {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 7px;
+  flex-wrap: wrap;
+}
+.due-editor label {
+  font-size: 10px;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.due-editor input {
+  min-width: 156px;
+  max-width: 100%;
+  height: 28px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--ink-900);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11px;
+  padding: 3px 6px;
+}
+.due-editor input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
 .card.done .primary {
   color: var(--text-faint);
   text-decoration: line-through;

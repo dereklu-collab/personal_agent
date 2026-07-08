@@ -212,6 +212,12 @@ export function toggleTask(id: number): Task | null {
   return row ? rowToTask(row) : null
 }
 
+export function updateTaskDue(id: number, due: string | null): Task | null {
+  db.prepare('UPDATE tasks SET due = ? WHERE id = ?').run(due, id)
+  const row = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id)
+  return row ? rowToTask(row) : null
+}
+
 export function deleteTask(id: number): void {
   db.prepare('DELETE FROM tasks WHERE id = ?').run(id)
 }

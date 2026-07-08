@@ -40,6 +40,8 @@ const api = {
   listTasks: (): Promise<Task[]> => ipcRenderer.invoke('tasks:list'),
   toggleTask: (id: number): Promise<Task | null> =>
     ipcRenderer.invoke('tasks:toggle', id),
+  updateTaskDue: (id: number, due: string | null): Promise<Task | null> =>
+    ipcRenderer.invoke('tasks:updateDue', id, due),
   deleteTask: (id: number): Promise<boolean> =>
     ipcRenderer.invoke('tasks:delete', id),
 

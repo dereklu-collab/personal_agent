@@ -77,11 +77,11 @@ export function executeAction(
     emit({ type: 'log', log })
   } else {
     db.setActionStatus(id, 'error')
-    const log = db.addLog(
-      'scheduled_action',
-      `Failed to open ${action.app}: ${result.reason}`
-    )
+    const message = `I couldn't open ${action.app}: ${result.reason}`
+    db.addMessage('assistant', message, 'schedule_app_open')
+    const log = db.addLog('scheduled_action', message)
     emit({ type: 'log', log })
+    emit({ type: 'data-changed' })
   }
 }
 

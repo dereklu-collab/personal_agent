@@ -210,6 +210,10 @@ export default function App() {
                   await window.api.toggleTask(id)
                   await refreshLists()
                 }}
+                onUpdateTaskDue={async (id, due) => {
+                  await window.api.updateTaskDue(id, due)
+                  await refreshLists()
+                }}
                 onDeleteTask={async (id) => {
                   await window.api.deleteTask(id)
                   await refreshLists()

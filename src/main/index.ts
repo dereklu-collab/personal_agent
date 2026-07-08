@@ -147,6 +147,12 @@ function registerIpc(): void {
   ipcMain.handle('tasks:toggle', (_e, id: unknown) =>
     typeof id === 'number' ? db.toggleTask(id) : null
   )
+  ipcMain.handle('tasks:updateDue', (_e, id: unknown, due: unknown) => {
+    if (typeof id !== 'number') return null
+    if (due !== null && typeof due !== 'string') return null
+    if (typeof due === 'string' && Number.isNaN(Date.parse(due))) return null
+    return db.updateTaskDue(id, due)
+  })
   ipcMain.handle('tasks:delete', (_e, id: unknown) => {
     if (typeof id === 'number') db.deleteTask(id)
     return true
@@ -206,7 +212,22 @@ function registerIpc(): void {
     }
     const userMessage = db.addMessage('user', text.trim(), null)
     emit({ type: 'data-changed' })
-    const res = await runAssistant(text.trim())
+    let res: Awaited<ReturnType<typeof runAssistant>>
+    try {
+      res = await runAssistant(text.trim())
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? `I couldn't complete that request: ${err.message}`
+          : "I couldn't complete that request."
+      const assistantMessage = db.addMessage('assistant', message, 'general_chat')
+      emit({ type: 'data-changed' })
+      return {
+        userMessage,
+        assistantMessage,
+        intent: 'general_chat'
+      }
+    }
 
     // Persist any structured side effects the model asked for.
     const s = db.getRawSettings()

@@ -5,6 +5,7 @@ interface Props {
   reminders: Reminder[]
   actions: ScheduledAction[]
   onToggleTask: (id: number) => void
+  onUpdateTaskDue: (id: number, due: string | null) => void
   onDeleteTask: (id: number) => void
   onDismissReminder: (id: number) => void
   onApproveAction: (id: number) => void
@@ -23,6 +24,22 @@ function when(iso: string): string {
   return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ` ${time}`
 }
 
+function toDateTimeInput(iso: string | null): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
+    d.getHours()
+  )}:${pad(d.getMinutes())}`
+}
+
+function fromDateTimeInput(value: string): string | null {
+  if (!value) return null
+  const d = new Date(value)
+  return Number.isNaN(d.getTime()) ? null : d.toISOString()
+}
+
 function actionStatusText(action: ScheduledAction): string {
   if (action.status === 'pending') return 'Needs approval'
   if (action.status === 'approved') return 'Will auto-open'
@@ -35,6 +52,7 @@ export function TaskList({
   reminders,
   actions,
   onToggleTask,
+  onUpdateTaskDue,
   onDeleteTask,
   onDismissReminder,
   onApproveAction,
@@ -72,6 +90,22 @@ export function TaskList({
               <div className="grow">
                 <div className="primary">{t.title}</div>
                 {t.due && <div className="meta">Due {when(t.due)}</div>}
+                <div className="due-editor">
+                  <label htmlFor={`task-due-${t.id}`}>Due</label>
+                  <input
+                    id={`task-due-${t.id}`}
+                    type="datetime-local"
+                    value={toDateTimeInput(t.due)}
+                    onChange={(e) =>
+                      onUpdateTaskDue(t.id, fromDateTimeInput(e.target.value))
+                    }
+                  />
+                  {t.due && (
+                    <button className="mini" onClick={() => onUpdateTaskDue(t.id, null)}>
+                      Clear
+                    </button>
+                  )}
+                </div>
               </div>
               <button className="mini danger" onClick={() => onDeleteTask(t.id)}>
                 Remove
