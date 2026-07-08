@@ -24,16 +24,27 @@ export function ChatPanel({
   const [text, setText] = useState('')
   const [copiedId, setCopiedId] = useState<number | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const shouldAutoScrollRef = useRef(true)
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
+    if (shouldAutoScrollRef.current) {
+      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
+    }
   }, [messages, sending])
 
   function submit(): void {
     const t = text.trim()
     if (!t || sending) return
+    shouldAutoScrollRef.current = true
     onSend(t)
     setText('')
+  }
+
+  function updateAutoScrollState(): void {
+    const el = scrollRef.current
+    if (!el) return
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    shouldAutoScrollRef.current = distanceFromBottom < 32
   }
 
   async function copyMessage(message: Message): Promise<void> {
@@ -50,7 +61,7 @@ export function ChatPanel({
         </div>
       )}
 
-      <div className="messages" ref={scrollRef}>
+      <div className="messages" ref={scrollRef} onScroll={updateAutoScrollState}>
         {messages.length === 0 && !sending && (
           <div className="empty">
             <div className="big">◇</div>

@@ -273,6 +273,51 @@ async function callOllama(
 
 export class AssistantError extends Error {}
 
+function validationIssues(error: { issues: { path: (string | number)[]; message: string }[] }): string {
+  return error.issues.map((i) => `${i.path.join('.')} ${i.message}`).join('; ')
+}
+
+async function callConfiguredModel(
+  settings: ReturnType<typeof getRawSettings>,
+  system: string,
+  history: ChatTurn[],
+  userText: string
+): Promise<string> {
+  if (settings.provider === 'openai') {
+    return callOpenAI(settings.apiKey, settings.model, system, history, userText)
+  }
+  if (settings.provider === 'ollama') {
+    return callOllama(settings.model, system, history, userText)
+  }
+  return callAnthropic(settings.apiKey, settings.model, system, history, userText)
+}
+
+function parseAssistantResponse(raw: string): AssistantResponse {
+  let parsed: unknown
+  try {
+    parsed = normalizeAssistantPayload(JSON.parse(stripFences(raw)))
+  } catch {
+    throw new AssistantError('The model returned something that was not valid JSON.')
+  }
+
+  const result = assistantResponseSchema.safeParse(parsed)
+  if (!result.success) {
+    throw new AssistantError(
+      `The model's response failed validation: ${validationIssues(result.error)}`
+    )
+  }
+  return result.data
+}
+
+function repairPrompt(originalText: string, failure: string): string {
+  return `The previous attempt failed because the structured JSON was invalid: ${failure}
+
+Answer the user's original request again, but return only valid JSON in the required schema. If a trailing detail makes the request ambiguous, keep the useful core request and ignore only the confusing trailing detail.
+
+Original user request:
+${originalText}`
+}
+
 /**
  * Send user text to the configured provider and return a validated response.
  * Throws AssistantError with a user-friendly message on any failure so the
@@ -288,34 +333,29 @@ export async function runAssistant(userText: string): Promise<AssistantResponse>
 
   let raw: string
   try {
-    if (s.provider === 'openai') {
-      raw = await callOpenAI(s.apiKey, s.model, system, history, userText)
-    } else if (s.provider === 'ollama') {
-      raw = await callOllama(s.model, system, history, userText)
-    } else {
-      raw = await callAnthropic(s.apiKey, s.model, system, history, userText)
-    }
+    raw = await callConfiguredModel(s, system, history, userText)
   } catch (err) {
     if (err instanceof AssistantError) throw err
     throw new AssistantError(`Couldn't reach the model: ${(err as Error).message}`)
   }
 
-  let parsed: unknown
   try {
-    parsed = normalizeAssistantPayload(JSON.parse(stripFences(raw)))
-  } catch {
-    throw new AssistantError('The model returned something that was not valid JSON.')
+    return parseAssistantResponse(raw)
+  } catch (firstErr) {
+    const failure = firstErr instanceof Error ? firstErr.message : 'Unknown validation error.'
+    try {
+      const retryRaw = await callConfiguredModel(
+        s,
+        system,
+        history,
+        repairPrompt(userText, failure)
+      )
+      return parseAssistantResponse(retryRaw)
+    } catch (retryErr) {
+      if (retryErr instanceof AssistantError) throw retryErr
+      throw new AssistantError(`Couldn't repair the model response: ${(retryErr as Error).message}`)
+    }
   }
-
-  const result = assistantResponseSchema.safeParse(parsed)
-  if (!result.success) {
-    throw new AssistantError(
-      `The model's response failed validation: ${result.error.issues
-        .map((i) => `${i.path.join('.')} ${i.message}`)
-        .join('; ')}`
-    )
-  }
-  return result.data
 }
 
 /** Ask the model to summarize the user's writing samples into a style profile. */
