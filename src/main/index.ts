@@ -91,6 +91,18 @@ function emit(event: BridgeEvent): void {
   win?.webContents.send('bridge:event', event)
 }
 
+function formatEmailDraft(email: {
+  to?: string
+  subject?: string
+  body: string
+}): string {
+  const parts = ['Draft email:']
+  if (email.to) parts.push(`To: ${email.to}`)
+  if (email.subject) parts.push(`Subject: ${email.subject}`)
+  parts.push('', email.body.trim())
+  return parts.join('\n')
+}
+
 // ---------------------------------------------------------------------------
 // IPC: every renderer request is validated here before touching state.
 // ---------------------------------------------------------------------------
@@ -106,11 +118,7 @@ function registerIpc(): void {
   ipcMain.handle('settings:set', (_e, patch: unknown) => {
     const p = (patch ?? {}) as Record<string, unknown>
     const clean: Parameters<typeof db.setSettings>[0] = {}
-<<<<<<< HEAD
-    if (p.provider === 'anthropic' || p.provider === 'openai')
-=======
     if (p.provider === 'anthropic' || p.provider === 'openai' || p.provider === 'ollama')
->>>>>>> aae2071 (Added Ollama)
       clean.provider = p.provider
     if (typeof p.model === 'string' && p.model.trim()) clean.model = p.model.trim()
     if (typeof p.apiKey === 'string') clean.apiKey = p.apiKey
@@ -222,6 +230,9 @@ function registerIpc(): void {
     }
 
     let responseText = res.response
+    if (res.intent === 'generate_email' && res.email) {
+      responseText = `${res.response.trim()}\n\n${formatEmailDraft(res.email)}`
+    }
     if (rejected.length) {
       responseText += `\n\n(Note: I can't schedule ${rejected.join(
         ', '

@@ -10,8 +10,6 @@ interface Props {
   onReset: () => void
 }
 
-<<<<<<< HEAD
-=======
 const MODEL_DEFAULTS: Record<PublicSettings['provider'], string> = {
   anthropic: 'claude-3-5-sonnet-latest',
   openai: 'gpt-4o-mini',
@@ -24,7 +22,6 @@ function providerApiLabel(provider: PublicSettings['provider']): string {
   return 'Ollama'
 }
 
->>>>>>> aae2071 (Added Ollama)
 export function SettingsPanel({ settings, allowlist, onSave, onReset }: Props) {
   const [provider, setProvider] = useState(settings.provider)
   const [model, setModel] = useState(settings.model)
@@ -33,10 +30,7 @@ export function SettingsPanel({ settings, allowlist, onSave, onReset }: Props) {
   const [autoApprove, setAutoApprove] = useState(settings.autoApproveActions)
   const [saved, setSaved] = useState(false)
   const [logs, setLogs] = useState<ActionLog[]>([])
-<<<<<<< HEAD
-=======
   const usesApiKey = provider !== 'ollama'
->>>>>>> aae2071 (Added Ollama)
 
   useEffect(() => {
     void window.api.listLogs().then(setLogs)
@@ -63,12 +57,6 @@ export function SettingsPanel({ settings, allowlist, onSave, onReset }: Props) {
         <label>Provider</label>
         <select
           value={provider}
-<<<<<<< HEAD
-          onChange={(e) => setProvider(e.target.value as PublicSettings['provider'])}
-        >
-          <option value="anthropic">Anthropic (Claude)</option>
-          <option value="openai">OpenAI</option>
-=======
           onChange={(e) => {
             const next = e.target.value as PublicSettings['provider']
             setProvider(next)
@@ -78,7 +66,6 @@ export function SettingsPanel({ settings, allowlist, onSave, onReset }: Props) {
           <option value="anthropic">Anthropic (Claude)</option>
           <option value="openai">OpenAI</option>
           <option value="ollama">Local (Ollama)</option>
->>>>>>> aae2071 (Added Ollama)
         </select>
       </div>
 
@@ -86,26 +73,6 @@ export function SettingsPanel({ settings, allowlist, onSave, onReset }: Props) {
         <label>Model</label>
         <input value={model} onChange={(e) => setModel(e.target.value)} />
         <span className="hint">
-<<<<<<< HEAD
-          Verify the current model name for your provider (e.g. a Claude or GPT
-          model you have access to).
-        </span>
-      </div>
-
-      <div className="field">
-        <label>{provider === 'openai' ? 'OpenAI' : 'Anthropic'} API key</label>
-        <input
-          type="password"
-          placeholder={settings.hasApiKey ? '•••••••• (saved)' : 'Paste key'}
-          value={apiKey}
-          onChange={(e) => setApiKey(e.target.value)}
-        />
-        <span className="hint">
-          Stored locally and only used by the background process. It never
-          reaches this window after saving.
-        </span>
-      </div>
-=======
           {provider === 'ollama'
             ? 'Use a local Ollama model you have pulled, such as llama3.1, mistral, or qwen2.5.'
             : 'Verify the current model name for your provider (e.g. a Claude or GPT model you have access to).'}
@@ -135,7 +102,6 @@ export function SettingsPanel({ settings, allowlist, onSave, onReset }: Props) {
           </span>
         </div>
       )}
->>>>>>> aae2071 (Added Ollama)
 
       <div className="field">
         <label>Transcription key (OpenAI Whisper)</label>

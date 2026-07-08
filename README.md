@@ -5,14 +5,9 @@ plan and the assistant extracts tasks, sets reminders, drafts messages in your o
 writing style, and schedules approved desktop actions like opening applications.
 
 Built with **Electron + React + TypeScript**, with **SQLite** for local storage,
-<<<<<<< HEAD
-**Zod** for validating structured AI responses, and your choice of the **Anthropic**
-or **OpenAI** API for the assistant (plus **OpenAI Whisper** for voice input).
-=======
 **Zod** for validating structured AI responses, and your choice of **Anthropic**,
 **OpenAI**, or keyless local **Ollama** for the assistant (plus **OpenAI Whisper**
 for voice input).
->>>>>>> aae2071 (Added Ollama)
 
 The widget lives in the bottom-right corner of the screen as a small pill. Click it
 to expand a compact panel with four tabs: Chat, Tasks, Style, and Settings.
@@ -26,10 +21,6 @@ npm install      # installs deps and rebuilds better-sqlite3 for Electron (posti
 npm run dev      # launches the widget in development
 ```
 
-<<<<<<< HEAD
-On first launch an onboarding screen asks for your provider (Anthropic or OpenAI)
-and an API key. Everything is stored locally.
-=======
 On first launch an onboarding screen asks for your provider. Anthropic and OpenAI
 need an API key; Local (Ollama) does not. Everything is stored locally.
 
@@ -42,7 +33,6 @@ ollama pull llama3.1
 
 Then choose **Local (Ollama)** in onboarding or Settings. The default model is
 `llama3.1`, but you can change it to any model you have pulled locally.
->>>>>>> aae2071 (Added Ollama)
 
 To create a production build and preview it:
 
@@ -155,13 +145,8 @@ Google Chrome, Safari, Notes, Calendar, Slack, Visual Studio Code. macOS uses
   compiled against your Electron version. This is automated via `postinstall`, but
   needs the platform build tools noted above.
 - **Verify model names.** The default model strings (e.g. `claude-3-5-sonnet-latest`,
-<<<<<<< HEAD
-  `gpt-4o-mini`) are just defaults you can change in Settings. Confirm the current
-  model names available to your API key.
-=======
   `gpt-4o-mini`, `llama3.1`) are just defaults you can change in Settings. Confirm
   the current model names available to your API key or local Ollama install.
->>>>>>> aae2071 (Added Ollama)
 - **Voice needs an OpenAI key.** Transcription uses OpenAI Whisper regardless of your
   chat provider. Set a transcription key in Settings (or reuse your OpenAI key).
 - **App allowlist is macOS-first.** Windows/Linux launching is best-effort and may

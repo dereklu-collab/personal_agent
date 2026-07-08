@@ -20,13 +20,10 @@ When the user asks for a reminder, identify: reminder title, date, time, and rec
 When the user asks to open an application later, create a scheduled action.
 Never execute sensitive actions without confirmation.
 Never invent completed actions. If something is only scheduled, say it is scheduled.
-For emails and messages, draft the content but do not send it.`
+For emails and messages, draft the content only. Never offer to send an email or ask whether to send it. The desktop app cannot send emails.`
 
-<<<<<<< HEAD
-=======
 const OLLAMA_BASE_URL = 'http://127.0.0.1:11434'
 
->>>>>>> aae2071 (Added Ollama)
 function buildSystemPrompt(): string {
   const nowIso = new Date().toISOString()
   const apps = allowlistLabels().join(', ')
@@ -51,7 +48,7 @@ OUTPUT FORMAT: Respond with ONLY a single JSON object, no markdown, no code fenc
   "scheduledActions": [ { "app": "allowlisted app name", "datetime": "ISO", "note": "optional" } ],
   "email": { "to": "optional", "subject": "optional", "body": "the draft" }
 }
-Only include "email" for generate_email. Use empty arrays when nothing applies. "response" is always required.`
+Only include "email" for generate_email. For generate_email, put the complete copy-and-pasteable draft in email.body and make response a short intro such as "Here's a draft you can copy and paste." Do not ask whether to send it. Use empty arrays when nothing applies. "response" is always required.`
 }
 
 interface ChatTurn {
@@ -135,8 +132,6 @@ async function callOpenAI(
   return data.choices?.[0]?.message?.content ?? ''
 }
 
-<<<<<<< HEAD
-=======
 async function callOllama(
   model: string,
   system: string,
@@ -178,7 +173,6 @@ async function callOllama(
   return data.message?.content ?? data.response ?? ''
 }
 
->>>>>>> aae2071 (Added Ollama)
 export class AssistantError extends Error {}
 
 /**
@@ -188,11 +182,7 @@ export class AssistantError extends Error {}
  */
 export async function runAssistant(userText: string): Promise<AssistantResponse> {
   const s = getRawSettings()
-<<<<<<< HEAD
-  if (!s.apiKey) {
-=======
   if (s.provider !== 'ollama' && !s.apiKey) {
->>>>>>> aae2071 (Added Ollama)
     throw new AssistantError('No API key set. Open Settings and add your key.')
   }
   const system = buildSystemPrompt()
@@ -200,13 +190,6 @@ export async function runAssistant(userText: string): Promise<AssistantResponse>
 
   let raw: string
   try {
-<<<<<<< HEAD
-    raw =
-      s.provider === 'openai'
-        ? await callOpenAI(s.apiKey, s.model, system, history, userText)
-        : await callAnthropic(s.apiKey, s.model, system, history, userText)
-  } catch (err) {
-=======
     if (s.provider === 'openai') {
       raw = await callOpenAI(s.apiKey, s.model, system, history, userText)
     } else if (s.provider === 'ollama') {
@@ -216,7 +199,6 @@ export async function runAssistant(userText: string): Promise<AssistantResponse>
     }
   } catch (err) {
     if (err instanceof AssistantError) throw err
->>>>>>> aae2071 (Added Ollama)
     throw new AssistantError(`Couldn't reach the model: ${(err as Error).message}`)
   }
 
@@ -241,11 +223,7 @@ export async function runAssistant(userText: string): Promise<AssistantResponse>
 /** Ask the model to summarize the user's writing samples into a style profile. */
 export async function summarizeWritingProfile(samples: string[]): Promise<string> {
   const s = getRawSettings()
-<<<<<<< HEAD
-  if (!s.apiKey) throw new AssistantError('No API key set.')
-=======
   if (s.provider !== 'ollama' && !s.apiKey) throw new AssistantError('No API key set.')
->>>>>>> aae2071 (Added Ollama)
   const system =
     'You analyze writing samples and produce a compact, reusable style profile. ' +
     'Describe tone, sentence length, formality, greetings/sign-offs, punctuation habits, ' +
@@ -255,12 +233,6 @@ export async function summarizeWritingProfile(samples: string[]): Promise<string
     .join('\n\n')
   const userText = `Here are my writing samples. Summarize my style:\n\n${joined}`
 
-<<<<<<< HEAD
-  const raw =
-    s.provider === 'openai'
-      ? await callOpenAIPlain(s.apiKey, s.model, system, userText)
-      : await callAnthropic(s.apiKey, s.model, system, [], userText)
-=======
   let raw: string
   if (s.provider === 'openai') {
     raw = await callOpenAIPlain(s.apiKey, s.model, system, userText)
@@ -269,7 +241,6 @@ export async function summarizeWritingProfile(samples: string[]): Promise<string
   } else {
     raw = await callAnthropic(s.apiKey, s.model, system, [], userText)
   }
->>>>>>> aae2071 (Added Ollama)
   return raw.trim()
 }
 
@@ -298,8 +269,6 @@ async function callOpenAIPlain(
   return data.choices?.[0]?.message?.content ?? ''
 }
 
-<<<<<<< HEAD
-=======
 async function callOllamaPlain(
   model: string,
   system: string,
@@ -338,7 +307,6 @@ async function callOllamaPlain(
   return data.message?.content ?? data.response ?? ''
 }
 
->>>>>>> aae2071 (Added Ollama)
 /**
  * Transcribe audio bytes via OpenAI Whisper. Uses the dedicated transcribe key
  * if set, otherwise the main API key (only valid when provider is OpenAI).

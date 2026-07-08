@@ -99,15 +99,12 @@ const SETTINGS_DEFAULTS: RawSettings = {
   onboarded: false
 }
 
-<<<<<<< HEAD
-=======
 function parseProvider(value: string | undefined): Provider {
   return value === 'openai' || value === 'ollama' || value === 'anthropic'
     ? value
     : SETTINGS_DEFAULTS.provider
 }
 
->>>>>>> aae2071 (Added Ollama)
 export function getRawSettings(): RawSettings {
   const rows = db.prepare('SELECT key, value FROM settings').all() as {
     key: string
@@ -115,11 +112,7 @@ export function getRawSettings(): RawSettings {
   }[]
   const map = new Map(rows.map((r) => [r.key, r.value]))
   return {
-<<<<<<< HEAD
-    provider: (map.get('provider') as Provider) ?? SETTINGS_DEFAULTS.provider,
-=======
     provider: parseProvider(map.get('provider')),
->>>>>>> aae2071 (Added Ollama)
     model: map.get('model') ?? SETTINGS_DEFAULTS.model,
     apiKey: map.get('apiKey') ?? '',
     transcribeKey: map.get('transcribeKey') ?? '',
@@ -261,12 +254,15 @@ export function listReminders(): Reminder[] {
 }
 
 export function dueReminders(nowIsoStr: string): Reminder[] {
+  const nowMs = Date.parse(nowIsoStr)
   const rows = db
     .prepare(
-      'SELECT * FROM reminders WHERE fired = 0 AND dismissed = 0 AND datetime <= ?'
+      'SELECT * FROM reminders WHERE fired = 0 AND dismissed = 0'
     )
-    .all(nowIsoStr) as any[]
-  return rows.map(rowToReminder)
+    .all() as any[]
+  return rows
+    .map(rowToReminder)
+    .filter((r) => Date.parse(r.datetime) <= nowMs)
 }
 
 export function markReminderFired(id: number): void {
@@ -324,12 +320,15 @@ export function listScheduledActions(): ScheduledAction[] {
 }
 
 export function dueScheduledActions(nowIsoStr: string): ScheduledAction[] {
+  const nowMs = Date.parse(nowIsoStr)
   const rows = db
     .prepare(
-      "SELECT * FROM scheduled_actions WHERE datetime <= ? AND status IN ('pending','approved')"
+      "SELECT * FROM scheduled_actions WHERE status IN ('pending','approved')"
     )
-    .all(nowIsoStr) as any[]
-  return rows.map(rowToAction)
+    .all() as any[]
+  return rows
+    .map(rowToAction)
+    .filter((a) => Date.parse(a.datetime) <= nowMs)
 }
 
 export function setActionStatus(

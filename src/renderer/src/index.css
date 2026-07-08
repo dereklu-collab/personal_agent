@@ -264,6 +264,18 @@ button {
   margin-bottom: 3px;
   letter-spacing: 0.3px;
 }
+.msg-copy {
+  display: block;
+  margin-top: 8px;
+  padding: 4px 8px;
+  border-radius: 7px;
+  background: var(--ink-700);
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.msg-copy:hover {
+  color: var(--text);
+}
 
 .composer {
   display: flex;
@@ -346,6 +358,10 @@ button {
   gap: 10px;
   margin-bottom: 6px;
 }
+.card.action-card {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
 .card .grow {
   flex: 1;
   min-width: 0;
@@ -412,6 +428,10 @@ button {
 .status-chip.approved {
   background: var(--accent-soft);
   color: var(--accent);
+}
+.status-chip.pending {
+  background: rgba(255, 203, 107, 0.12);
+  color: var(--warn);
 }
 .status-chip.error {
   background: rgba(255, 107, 122, 0.16);

@@ -103,7 +103,9 @@ export default function App() {
   const activeCount =
     tasks.filter((t) => !t.done).length +
     reminders.filter((r) => !r.fired).length +
-    actions.length
+    actions.filter((a) =>
+      ['pending', 'approved', 'awaiting_confirm'].includes(a.status)
+    ).length
 
   const status: Status = sending
     ? 'thinking'

@@ -23,6 +23,13 @@ function when(iso: string): string {
   return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ` ${time}`
 }
 
+function actionStatusText(action: ScheduledAction): string {
+  if (action.status === 'pending') return 'Needs approval'
+  if (action.status === 'approved') return 'Will auto-open'
+  if (action.status === 'awaiting_confirm') return 'Ready now'
+  return action.status.replace(/_/g, ' ')
+}
+
 export function TaskList({
   tasks,
   reminders,
@@ -99,20 +106,23 @@ export function TaskList({
         <div>
           <p className="section-title">Scheduled apps</p>
           {actions.map((a) => (
-            <div key={a.id} className="card">
+            <div key={a.id} className="card action-card">
               <div className="grow">
                 <div className="primary">Open {a.app}</div>
-                <div className="meta">{when(a.datetime)}</div>
+                <div className="meta">
+                  {when(a.datetime)}
+                  {a.note && ` · ${a.note}`}
+                </div>
               </div>
               <span className={`status-chip ${a.status}`}>
-                {a.status.replace(/_/g, ' ')}
+                {actionStatusText(a)}
               </span>
               {(a.status === 'awaiting_confirm' || a.status === 'pending') && (
                 <button
                   className="mini primary"
                   onClick={() => onApproveAction(a.id)}
                 >
-                  {a.status === 'awaiting_confirm' ? 'Open now' : 'Approve'}
+                  {a.status === 'awaiting_confirm' ? 'Open now' : 'Auto-open'}
                 </button>
               )}
               {a.status !== 'done' && (

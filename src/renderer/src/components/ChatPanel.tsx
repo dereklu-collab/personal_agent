@@ -22,6 +22,7 @@ export function ChatPanel({
   onDismissError
 }: Props) {
   const [text, setText] = useState('')
+  const [copiedId, setCopiedId] = useState<number | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -33,6 +34,12 @@ export function ChatPanel({
     if (!t || sending) return
     onSend(t)
     setText('')
+  }
+
+  async function copyMessage(message: Message): Promise<void> {
+    await navigator.clipboard.writeText(message.content)
+    setCopiedId(message.id)
+    setTimeout(() => setCopiedId(null), 1500)
   }
 
   return (
@@ -60,6 +67,11 @@ export function ChatPanel({
               <span className="intent-tag">{m.intent.replace(/_/g, ' ')}</span>
             )}
             {m.content}
+            {m.role === 'assistant' && m.intent === 'generate_email' && (
+              <button className="msg-copy" onClick={() => void copyMessage(m)}>
+                {copiedId === m.id ? 'Copied' : 'Copy'}
+              </button>
+            )}
           </div>
         ))}
 
