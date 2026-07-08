@@ -6,6 +6,8 @@ interface Props {
   messages: Message[]
   sending: boolean
   error: string | null
+  draft: string
+  onDraftChange: (text: string) => void
   onSend: (text: string) => void
   onListeningChange: (listening: boolean) => void
   onMicError: (msg: string) => void
@@ -16,12 +18,13 @@ export function ChatPanel({
   messages,
   sending,
   error,
+  draft,
+  onDraftChange,
   onSend,
   onListeningChange,
   onMicError,
   onDismissError
 }: Props) {
-  const [text, setText] = useState('')
   const [copiedId, setCopiedId] = useState<number | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const shouldAutoScrollRef = useRef(true)
@@ -33,11 +36,11 @@ export function ChatPanel({
   }, [messages, sending])
 
   function submit(): void {
-    const t = text.trim()
+    const t = draft.trim()
     if (!t || sending) return
     shouldAutoScrollRef.current = true
     onSend(t)
-    setText('')
+    onDraftChange('')
   }
 
   function updateAutoScrollState(): void {
@@ -103,9 +106,9 @@ export function ChatPanel({
 
       <div className="composer">
         <textarea
-          value={text}
+          value={draft}
           placeholder="Type a message…"
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => onDraftChange(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault()
@@ -114,13 +117,13 @@ export function ChatPanel({
           }}
         />
         <MicButton
-          onTranscript={(t) => setText((prev) => (prev ? prev + ' ' + t : t))}
+          onTranscript={(t) => onDraftChange(draft ? draft + ' ' + t : t)}
           onError={onMicError}
           onListeningChange={onListeningChange}
         />
         <button
           className="icon-btn send"
-          disabled={!text.trim() || sending}
+          disabled={!draft.trim() || sending}
           onClick={submit}
           aria-label="Send"
         >

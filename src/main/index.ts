@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, screen, shell } from 'electron'
 import { join } from 'node:path'
 import type { AssistantResult, BridgeEvent, Message, PublicSettings } from '@shared/types'
 import * as db from './db'
-import { resolveApp, allowlistLabels, openApp, closeApp } from './appOpener'
+import { resolveApp, allowlistLabels, openApp, closeApp, openSystemUrl } from './appOpener'
 import {
   browserSiteActionFromText,
   closeKnownSite,
@@ -396,6 +396,49 @@ async function trySummarizeTextNow(
   }
 }
 
+function isCallRequest(text: string): boolean {
+  const lower = text.toLowerCase()
+  if (/\b(open|launch|start|close|quit|exit|shut)\b/.test(lower)) return false
+  return /\b(call|phone|facetime|face time)\b/.test(lower)
+}
+
+function cleanCallTarget(text: string): string {
+  return text
+    .replace(/^\s*(hi|hey|hello)[,!]?\s+/i, '')
+    .replace(/\b(can you|could you|please|for me)\b/gi, ' ')
+    .replace(/\b(audio|video)\s+(call|facetime|face time|phone)\b/gi, ' ')
+    .replace(/\b(call|phone|facetime|face time)\b/gi, ' ')
+    .replace(/\b(on|with|using|through|via)\s+(facetime|face time|phone|phone app)\b/gi, ' ')
+    .replace(/^(to|for)\s+/i, '')
+    .replace(/[?.!,]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function tryStartCallNow(text: string, userMessage: Message): AssistantResult | null {
+  if (!isCallRequest(text)) return null
+
+  const target = cleanCallTarget(text)
+  if (!target) {
+    return addBasicAssistantMessage(userMessage, 'Who should I call?')
+  }
+
+  const result = openSystemUrl(
+    `facetime://${encodeURIComponent(target)}`,
+    `FaceTime for ${target}`
+  )
+  const message = result.ok
+    ? `Opening FaceTime for ${target}. macOS may ask you to choose or confirm the call.`
+    : `This request cannot be fulfilled. AI Assistant could not start a call for ${target}. ${result.reason}`
+  if (!result.ok) db.addLog('system', `Call request failed: ${target}: ${result.reason}`)
+  const assistantMessage = db.addMessage('assistant', message, 'schedule_app_open')
+  return {
+    userMessage,
+    assistantMessage,
+    intent: 'schedule_app_open'
+  }
+}
+
 function parseDateFromTaskText(text: string): string | null {
   const relative = parseRelativeDate(text)
   if (relative) return relative
@@ -686,18 +729,21 @@ function isReminderRemovalRequest(text: string): boolean {
 function cleanReminderRemovalTitle(text: string): string {
   return text
     .replace(/^\s*(hi|hey|hello)[,!]?\s+/i, '')
-    .replace(/\b(can you|could you|please|for me)\b/gi, ' ')
+    .replace(/\b(can you|could you|please|for me|i meant|i mean)\b/gi, ' ')
+    .replace(/\bin\s+\d+\s*(second|seconds|sec|secs|minute|minutes|min|hour|hours|hr|hrs|day|days)\b/gi, ' ')
+    .replace(/\b(?:on\s+)?\d{1,2}\/\d{1,2}\/\d{2,4}(?:\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/gi, ' ')
+    .replace(/\btomorrow(?:\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/gi, ' ')
     .replace(/\b(remove|delete|cancel|dismiss|clear)\b/gi, ' ')
     .replace(/\b(a|an|the|that|this|it)\b/gi, ' ')
     .replace(/\b(reminder|alert|notification)\b/gi, ' ')
-    .replace(/^(to|for|about)\s+/i, '')
+    .replace(/\b(to|for|about|called|named)\b/gi, ' ')
     .replace(/[?.!,]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
 }
 
 function lastCreatedReminderTitle(userMessage: Message): string | null {
-  const previousAssistant = db
+  const matches = db
     .listMessages(12)
     .filter(
       (m) =>
@@ -705,10 +751,10 @@ function lastCreatedReminderTitle(userMessage: Message): string | null {
         m.role === 'assistant' &&
         m.intent === 'create_reminder'
     )
-    .at(-1)
+    .map((m) => m.content.match(/^Reminder set: (.+?)\. I’ll remind you /i)?.[1]?.trim())
+    .filter((title): title is string => !!title)
 
-  const match = previousAssistant?.content.match(/^Reminder set: (.+?)\. I’ll remind you /i)
-  return match?.[1]?.trim() ?? null
+  return matches.at(-1) ?? null
 }
 
 function findActiveReminder(title: string | null): { id: number; title: string } | null {
@@ -719,25 +765,60 @@ function findActiveReminder(title: string | null): { id: number; title: string }
   const exact = reminders.find((r) => r.title.toLowerCase() === normalizedTitle)
   if (exact) return { id: exact.id, title: exact.title }
 
-  const fuzzy = reminders.find((r) => {
-    const reminderTitle = r.title.toLowerCase()
-    return reminderTitle.includes(normalizedTitle) || normalizedTitle.includes(reminderTitle)
-  })
-  return fuzzy ? { id: fuzzy.id, title: fuzzy.title } : null
+  const titleWords = normalizedWords(title)
+  if (titleWords.length === 0) return null
+
+  const scored = reminders
+    .map((reminder) => {
+      const reminderTitle = reminder.title.toLowerCase()
+      const reminderWords = normalizedWords(reminder.title)
+      const wordMatches = titleWords.filter((word) => reminderWords.includes(word)).length
+      const containsScore =
+        reminderTitle.includes(normalizedTitle) || normalizedTitle.includes(reminderTitle) ? 2 : 0
+      return { reminder, score: wordMatches + containsScore }
+    })
+    .filter(({ score }) => score >= Math.min(2, titleWords.length))
+    .sort((a, b) => b.score - a.score)
+
+  if (scored.length > 1 && scored[0].score === scored[1].score) return null
+
+  const best = scored[0]?.reminder
+  return best ? { id: best.id, title: best.title } : null
 }
 
-function tryRemoveReminderNow(text: string, userMessage: Message): AssistantResult | null {
-  if (!isReminderRemovalRequest(text)) return null
+function previousReminderRemovalTitle(userMessage: Message): string | null {
+  const previousUser = db
+    .listMessages(12)
+    .filter((m) => m.id < userMessage.id && m.role === 'user')
+    .reverse()
+    .find((m) => isReminderRemovalRequest(m.content))
 
-  const typedTitle = cleanReminderRemovalTitle(text)
-  const contextTitle = /^(that|this|it)?\s*(reminder)?$/i.test(typedTitle)
-    ? lastCreatedReminderTitle(userMessage)
-    : typedTitle
-  const reminder = findActiveReminder(contextTitle || lastCreatedReminderTitle(userMessage))
+  const title = previousUser ? cleanReminderRemovalTitle(previousUser.content) : ''
+  return title || null
+}
+
+function hasPendingReminderRemoval(userMessage: Message): boolean {
+  return db
+    .listMessages(8)
+    .some(
+      (m) =>
+        m.id < userMessage.id &&
+        m.role === 'assistant' &&
+        m.intent === 'create_reminder' &&
+        (/^Which reminder should I remove\?$/i.test(m.content) ||
+          /^I couldn't find an active reminder for .+\.$/i.test(m.content))
+    )
+}
+
+function removeReminderByTitle(
+  title: string | null,
+  userMessage: Message
+): AssistantResult {
+  const reminder = findActiveReminder(title)
 
   if (!reminder) {
-    const message = contextTitle
-      ? `I couldn't find an active reminder for ${contextTitle}.`
+    const message = title
+      ? `I couldn't find an active reminder for ${title}.`
       : 'Which reminder should I remove?'
     const assistantMessage = db.addMessage('assistant', message, 'create_reminder')
     return {
@@ -758,6 +839,27 @@ function tryRemoveReminderNow(text: string, userMessage: Message): AssistantResu
     assistantMessage,
     intent: 'create_reminder'
   }
+}
+
+function tryRemoveReminderNow(text: string, userMessage: Message): AssistantResult | null {
+  if (!isReminderRemovalRequest(text)) return null
+
+  const typedTitle = cleanReminderRemovalTitle(text)
+  const contextTitle = /^(that|this|it)?\s*(reminder)?$/i.test(typedTitle)
+    ? previousReminderRemovalTitle(userMessage) ?? lastCreatedReminderTitle(userMessage)
+    : typedTitle
+  return removeReminderByTitle(contextTitle || lastCreatedReminderTitle(userMessage), userMessage)
+}
+
+function tryCompleteReminderRemoval(text: string, userMessage: Message): AssistantResult | null {
+  const hasReminderReference = /\b(reminder|that|it)\b/i.test(text)
+  if (!hasPendingReminderRemoval(userMessage) && !hasReminderReference) return null
+
+  const typedTitle = cleanReminderRemovalTitle(text)
+  const title = typedTitle || previousReminderRemovalTitle(userMessage) || lastCreatedReminderTitle(userMessage)
+  if (!title && !hasPendingReminderRemoval(userMessage)) return null
+
+  return removeReminderByTitle(title || null, userMessage)
 }
 
 function tryCreateReminderNow(text: string, userMessage: Message): AssistantResult | null {
@@ -1072,6 +1174,12 @@ function registerIpc(): void {
       return summaryResult
     }
 
+    const callResult = tryStartCallNow(text.trim(), userMessage)
+    if (callResult) {
+      emit({ type: 'data-changed' })
+      return callResult
+    }
+
     const scheduledBrowserResult = tryScheduleBrowserSiteAction(text.trim(), userMessage)
     if (scheduledBrowserResult) {
       emit({ type: 'data-changed' })
@@ -1112,6 +1220,12 @@ function registerIpc(): void {
     if (removeReminderResult) {
       emit({ type: 'data-changed' })
       return removeReminderResult
+    }
+
+    const completeReminderRemovalResult = tryCompleteReminderRemoval(text.trim(), userMessage)
+    if (completeReminderRemovalResult) {
+      emit({ type: 'data-changed' })
+      return completeReminderRemovalResult
     }
 
     const deleteTaskResult = tryDeleteTaskNow(text.trim(), userMessage)

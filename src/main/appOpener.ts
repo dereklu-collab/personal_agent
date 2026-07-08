@@ -49,6 +49,90 @@ const APPS: AppTarget[] = [
     linux: ['gnome-calendar']
   },
   {
+    label: 'Messages',
+    aliases: ['messages', 'message', 'imessage', 'i message', 'texts', 'text messages'],
+    darwin: ['open', '-a', 'Messages'],
+    win32: [],
+    linux: []
+  },
+  {
+    label: 'FaceTime',
+    aliases: ['facetime', 'face time', 'video call'],
+    darwin: ['open', '-a', 'FaceTime'],
+    win32: [],
+    linux: []
+  },
+  {
+    label: 'Phone',
+    aliases: ['phone', 'phone app', 'calls', 'call app'],
+    darwin: ['open', '-a', 'Phone'],
+    win32: [],
+    linux: []
+  },
+  {
+    label: 'Photos',
+    aliases: ['photos', 'apple photos', 'pictures', 'photo library'],
+    darwin: ['open', '-a', 'Photos'],
+    win32: [],
+    linux: []
+  },
+  {
+    label: 'Maps',
+    aliases: ['maps', 'apple maps', 'map'],
+    darwin: ['open', '-a', 'Maps'],
+    win32: [],
+    linux: []
+  },
+  {
+    label: 'Contacts',
+    aliases: ['contacts', 'address book'],
+    darwin: ['open', '-a', 'Contacts'],
+    win32: [],
+    linux: []
+  },
+  {
+    label: 'Mail',
+    aliases: ['mail', 'apple mail', 'email app'],
+    darwin: ['open', '-a', 'Mail'],
+    win32: [],
+    linux: []
+  },
+  {
+    label: 'Reminders',
+    aliases: ['reminders', 'apple reminders'],
+    darwin: ['open', '-a', 'Reminders'],
+    win32: [],
+    linux: []
+  },
+  {
+    label: 'Music',
+    aliases: ['music', 'apple music', 'itunes'],
+    darwin: ['open', '-a', 'Music'],
+    win32: [],
+    linux: []
+  },
+  {
+    label: 'Podcasts',
+    aliases: ['podcasts', 'apple podcasts'],
+    darwin: ['open', '-a', 'Podcasts'],
+    win32: [],
+    linux: []
+  },
+  {
+    label: 'Calculator',
+    aliases: ['calculator', 'calc'],
+    darwin: ['open', '-a', 'Calculator'],
+    win32: ['calc'],
+    linux: ['gnome-calculator']
+  },
+  {
+    label: 'System Settings',
+    aliases: ['settings', 'system settings', 'preferences', 'system preferences'],
+    darwin: ['open', '-a', 'System Settings'],
+    win32: ['cmd', '/c', 'start', '', 'ms-settings:'],
+    linux: ['gnome-control-center']
+  },
+  {
     label: 'Slack',
     aliases: ['slack'],
     darwin: ['open', '-a', 'Slack'],
@@ -132,6 +216,26 @@ export function openApp(name: string): OpenResult {
     if (result.error) {
       return { ok: false, reason: result.error.message }
     }
+    if (result.status !== 0) {
+      return {
+        ok: false,
+        reason: (result.stderr || result.stdout || `exit code ${result.status}`).trim()
+      }
+    }
+    return { ok: true, label }
+  } catch (err) {
+    return { ok: false, reason: (err as Error).message }
+  }
+}
+
+export function openSystemUrl(url: string, label: string): OpenResult {
+  if (process.platform !== 'darwin') {
+    return { ok: false, reason: `${label} is only configured for macOS.` }
+  }
+
+  try {
+    const result = spawnSync('open', [url], { encoding: 'utf8' })
+    if (result.error) return { ok: false, reason: result.error.message }
     if (result.status !== 0) {
       return {
         ok: false,

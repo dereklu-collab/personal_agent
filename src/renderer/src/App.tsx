@@ -55,6 +55,7 @@ export default function App() {
   const [sending, setSending] = useState(false)
   const [listening, setListening] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [chatDraft, setChatDraft] = useState('')
   const [confirmAction, setConfirmAction] = useState<ScheduledAction | null>(null)
 
   const refreshLists = useCallback(async () => {
@@ -220,6 +221,8 @@ export default function App() {
                 messages={messages}
                 sending={sending}
                 error={error}
+                draft={chatDraft}
+                onDraftChange={setChatDraft}
                 onSend={send}
                 onListeningChange={setListening}
                 onMicError={setError}
