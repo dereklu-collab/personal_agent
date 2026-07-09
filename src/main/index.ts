@@ -23,10 +23,28 @@ import { startScheduler, stopScheduler, executeAction } from './scheduler'
 
 let win: BrowserWindow | null = null
 let expanded = false
+let resizeSaveTimer: ReturnType<typeof setTimeout> | null = null
 
 const COLLAPSED = { width: 168, height: 64 }
-const EXPANDED = { width: 384, height: 588 }
+const EXPANDED_DEFAULT = { width: 348, height: 500 }
+const EXPANDED_MIN = { width: 320, height: 380 }
+const EXPANDED_MAX = { width: 720, height: 900 }
 const MARGIN = 16
+
+function clampSize(
+  size: { width: number; height: number },
+  min = EXPANDED_MIN,
+  max = EXPANDED_MAX
+): { width: number; height: number } {
+  return {
+    width: Math.min(Math.max(size.width, min.width), max.width),
+    height: Math.min(Math.max(size.height, min.height), max.height)
+  }
+}
+
+function expandedWindowSize(): { width: number; height: number } {
+  return clampSize(db.getExpandedWindowSize() ?? EXPANDED_DEFAULT)
+}
 
 function positionFor(size: { width: number; height: number }): {
   x: number
@@ -41,7 +59,16 @@ function positionFor(size: { width: number; height: number }): {
 
 function applyBounds(): void {
   if (!win) return
-  const size = expanded ? EXPANDED : COLLAPSED
+  if (expanded) {
+    win.setResizable(true)
+    win.setMaximumSize(EXPANDED_MAX.width, EXPANDED_MAX.height)
+    win.setMinimumSize(EXPANDED_MIN.width, EXPANDED_MIN.height)
+  } else {
+    win.setMinimumSize(COLLAPSED.width, COLLAPSED.height)
+    win.setMaximumSize(COLLAPSED.width, COLLAPSED.height)
+    win.setResizable(false)
+  }
+  const size = expanded ? expandedWindowSize() : COLLAPSED
   const { x, y } = positionFor(size)
   win.setBounds({ x, y, width: size.width, height: size.height }, false)
 }
@@ -59,6 +86,10 @@ function createWindow(): void {
     frame: false,
     transparent: true,
     resizable: false,
+    minWidth: COLLAPSED.width,
+    minHeight: COLLAPSED.height,
+    maxWidth: COLLAPSED.width,
+    maxHeight: COLLAPSED.height,
     maximizable: false,
     fullscreenable: false,
     alwaysOnTop: true,
@@ -72,6 +103,15 @@ function createWindow(): void {
     }
   })
   win.setAlwaysOnTop(true, 'floating')
+  win.on('resize', () => {
+    if (!win || !expanded) return
+    if (resizeSaveTimer) clearTimeout(resizeSaveTimer)
+    resizeSaveTimer = setTimeout(() => {
+      if (!win || !expanded) return
+      const [width, height] = win.getSize()
+      db.setExpandedWindowSize(width, height)
+    }, 250)
+  })
   win.once('ready-to-show', () => win?.show())
 
   // Open external links in the OS browser, never in-app.

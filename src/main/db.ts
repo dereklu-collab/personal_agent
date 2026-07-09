@@ -142,6 +142,29 @@ export function resetSettings(): void {
   db.prepare('DELETE FROM settings').run()
 }
 
+export function getExpandedWindowSize(): { width: number; height: number } | null {
+  const rows = db
+    .prepare("SELECT key, value FROM settings WHERE key IN ('expandedWindowWidth', 'expandedWindowHeight')")
+    .all() as { key: string; value: string }[]
+  const map = new Map(rows.map((r) => [r.key, Number(r.value)]))
+  const width = map.get('expandedWindowWidth')
+  const height = map.get('expandedWindowHeight')
+  if (!width || !height || Number.isNaN(width) || Number.isNaN(height)) return null
+  return { width, height }
+}
+
+export function setExpandedWindowSize(width: number, height: number): void {
+  const stmt = db.prepare(
+    'INSERT INTO settings (key, value) VALUES (?, ?) ' +
+      'ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+  )
+  const tx = db.transaction(() => {
+    stmt.run('expandedWindowWidth', String(Math.round(width)))
+    stmt.run('expandedWindowHeight', String(Math.round(height)))
+  })
+  tx()
+}
+
 // ---------- messages ----------
 function rowToMessage(r: any): Message {
   return {
