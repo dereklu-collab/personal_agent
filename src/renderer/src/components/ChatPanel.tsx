@@ -61,7 +61,7 @@ export function ChatPanel({
     return lines
       .join('\n')
       .replace(
-        /^\s*(?:here\s+is\s+)?(?:the\s+)?(?:revised\s+)?(?:email\s+)?(?:body|draft)\s*:?\s*/i,
+        /^\s*(?:here(?:\s+is|'s|\u2019s)\s+)?(?:the\s+)?(?:revised\s+)?(?:email\s+)?(?:body|draft)\s*:?\s*/i,
         ''
       )
       .trim()
