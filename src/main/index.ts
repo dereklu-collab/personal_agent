@@ -73,6 +73,18 @@ function applyBounds(): void {
   win.setBounds({ x, y, width: size.width, height: size.height }, false)
 }
 
+function resizeExpandedWindow(size: { width: number; height: number }): {
+  width: number
+  height: number
+} | null {
+  if (!win || !expanded) return null
+  const next = clampSize(size)
+  const { x, y } = positionFor(next)
+  win.setBounds({ x, y, width: next.width, height: next.height }, false)
+  db.setExpandedWindowSize(next.width, next.height)
+  return next
+}
+
 function createWindow(): void {
   app.setName('AI Assistant')
   const size = COLLAPSED
@@ -1706,6 +1718,20 @@ function registerIpc(): void {
     expanded = value === true
     applyBounds()
     return expanded
+  })
+  ipcMain.handle('window:getExpandedSize', () => {
+    if (win && expanded) {
+      const [width, height] = win.getSize()
+      return { width, height }
+    }
+    return expandedWindowSize()
+  })
+  ipcMain.handle('window:resizeExpanded', (_e, size: unknown) => {
+    const value = size as { width?: unknown; height?: unknown }
+    if (typeof value?.width !== 'number' || typeof value?.height !== 'number') {
+      return null
+    }
+    return resizeExpandedWindow({ width: value.width, height: value.height })
   })
 
   ipcMain.handle('settings:get', () => toPublicSettings())

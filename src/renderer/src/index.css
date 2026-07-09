@@ -150,6 +150,7 @@ button {
 
 /* ---------- expanded panel ---------- */
 .panel {
+  position: relative;
   height: 100%;
   width: 100%;
   display: flex;
@@ -159,6 +160,32 @@ button {
   border-radius: var(--radius);
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
   overflow: hidden;
+}
+
+.resize-grip {
+  -webkit-app-region: no-drag;
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 30px;
+  height: 30px;
+  cursor: nesw-resize;
+  z-index: 20;
+}
+.resize-grip::before {
+  content: '';
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  width: 12px;
+  height: 12px;
+  border-left: 2px solid var(--text-faint);
+  border-bottom: 2px solid var(--text-faint);
+  opacity: 0.75;
+}
+.resize-grip:hover::before {
+  border-color: var(--accent);
+  opacity: 1;
 }
 
 .header {

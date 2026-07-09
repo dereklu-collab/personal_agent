@@ -17,6 +17,13 @@ const api = {
   // window
   setExpanded: (v: boolean): Promise<boolean> =>
     ipcRenderer.invoke('window:setExpanded', v),
+  getExpandedSize: (): Promise<{ width: number; height: number }> =>
+    ipcRenderer.invoke('window:getExpandedSize'),
+  resizeExpanded: (size: {
+    width: number
+    height: number
+  }): Promise<{ width: number; height: number } | null> =>
+    ipcRenderer.invoke('window:resizeExpanded', size),
 
   // settings
   getSettings: (): Promise<PublicSettings> => ipcRenderer.invoke('settings:get'),

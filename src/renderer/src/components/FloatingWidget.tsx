@@ -1,4 +1,5 @@
-import type { ReactNode } from 'react'
+import { useRef } from 'react'
+import type { PointerEvent, ReactNode } from 'react'
 
 export type Status = 'idle' | 'thinking' | 'listening' | 'due'
 
@@ -19,6 +20,40 @@ export function FloatingWidget({
   onOpenSettings,
   children
 }: Props) {
+  const resizeState = useRef<{
+    startX: number
+    startY: number
+    startWidth: number
+    startHeight: number
+  } | null>(null)
+
+  async function startResize(event: PointerEvent<HTMLButtonElement>): Promise<void> {
+    event.preventDefault()
+    event.stopPropagation()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    const size = await window.api.getExpandedSize()
+    resizeState.current = {
+      startX: event.screenX,
+      startY: event.screenY,
+      startWidth: size.width,
+      startHeight: size.height
+    }
+  }
+
+  function updateResize(event: PointerEvent<HTMLButtonElement>): void {
+    const state = resizeState.current
+    if (!state) return
+    const width = state.startWidth + (state.startX - event.screenX)
+    const height = state.startHeight + (state.startY - event.screenY)
+    void window.api.resizeExpanded({ width, height })
+  }
+
+  function stopResize(event: PointerEvent<HTMLButtonElement>): void {
+    if (!resizeState.current) return
+    resizeState.current = null
+    event.currentTarget.releasePointerCapture(event.pointerId)
+  }
+
   if (!expanded) {
     return (
       <div className="pill">
@@ -51,6 +86,15 @@ export function FloatingWidget({
         </button>
       </div>
       {children}
+      <button
+        className="resize-grip"
+        title="Resize assistant"
+        aria-label="Resize assistant"
+        onPointerDown={(event) => void startResize(event)}
+        onPointerMove={updateResize}
+        onPointerUp={stopResize}
+        onPointerCancel={stopResize}
+      />
     </div>
   )
 }
