@@ -816,6 +816,7 @@ async function trySummarizeTextNow(
 
 function isCallRequest(text: string): boolean {
   const lower = text.toLowerCase()
+  if (isReminderRequest(text)) return false
   if (/\b(open|launch|start|close|quit|exit|shut)\b/.test(lower)) return false
   return /\b(call|phone|facetime|face time)\b/.test(lower)
 }
@@ -1316,12 +1317,15 @@ function tryUpdateLastScheduleNow(text: string, userMessage: Message): Assistant
 function cleanReminderTitle(text: string): string {
   return text
     .replace(/^\s*(hi|hey|hello)[,!]?\s+/i, '')
+    .replace(/^\s*(can you|could you|please)\s+/i, '')
+    .replace(/[.!?]\s*(the|this|it)\s+[\s\S]*$/i, '')
     .replace(/\bin\s+\d+\s*(second|seconds|sec|secs|minute|minutes|min|hour|hours|hr|hrs|day|days)\b/gi, '')
     .replace(/\b(?:on\s+)?\d{1,2}\/\d{1,2}\/\d{2,4}(?:\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/gi, '')
     .replace(/\btomorrow(?:\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/gi, '')
     .replace(/^(please\s+)?(set|create|add|make)\s+(a\s+)?(new\s+)?reminder\s*/i, '')
     .replace(/^remind\s+me\s*/i, '')
-    .replace(/^(to|for|about)\s+/i, '')
+    .replace(/^(for me\s+)?(to|for|about)\s+/i, '')
+    .replace(/^me\s+to\s+/i, '')
     .replace(/^(a|an|the)\s+/i, '')
     .replace(/\b(as well|also|too)\b/gi, ' ')
     .replace(/\s+(for me|for myself)\b/gi, '')
@@ -1637,6 +1641,7 @@ function tryCreateReminderNow(text: string, userMessage: Message): AssistantResu
 }
 
 function tryOpenAppNow(text: string, userMessage: Message): AssistantResult | null {
+  if (isReminderRequest(text)) return null
   if (!hasImmediateOpenIntent(text)) return null
 
   const label = resolveApp(text)
@@ -1669,6 +1674,7 @@ function tryOpenAppNow(text: string, userMessage: Message): AssistantResult | nu
 }
 
 function tryCloseAppNow(text: string, userMessage: Message): AssistantResult | null {
+  if (isReminderRequest(text)) return null
   const lower = text.toLowerCase()
   if (!/\b(close|quit|exit|shut)\b/.test(lower)) return null
 
@@ -1702,6 +1708,7 @@ function tryCloseAppNow(text: string, userMessage: Message): AssistantResult | n
 }
 
 function tryBrowserSiteOpen(text: string, userMessage: Message): AssistantResult | null {
+  if (isReminderRequest(text)) return null
   if (!hasBrowserSiteIntent(text)) return null
 
   const result = openKnownSite(text)
@@ -1718,6 +1725,7 @@ function tryBrowserSiteOpen(text: string, userMessage: Message): AssistantResult
 }
 
 function tryBrowserSiteClose(text: string, userMessage: Message): AssistantResult | null {
+  if (isReminderRequest(text)) return null
   if (!hasBrowserSiteCloseIntent(text)) return null
 
   const result = closeKnownSite(text)
@@ -1734,6 +1742,7 @@ function tryBrowserSiteClose(text: string, userMessage: Message): AssistantResul
 }
 
 function tryScheduleBrowserSiteAction(text: string, userMessage: Message): AssistantResult | null {
+  if (isReminderRequest(text)) return null
   const datetime = parseRelativeDate(text)
   if (!datetime) return null
 
@@ -1764,6 +1773,7 @@ function tryScheduleBrowserSiteAction(text: string, userMessage: Message): Assis
 }
 
 function tryScheduleAppOpen(text: string, userMessage: Message): AssistantResult | null {
+  if (isReminderRequest(text)) return null
   const lower = text.toLowerCase()
   if (!/\b(open|launch|start)\b/.test(lower)) return null
 
