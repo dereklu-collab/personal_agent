@@ -463,6 +463,7 @@ export async function runGeneralChat(userText: string): Promise<string> {
   }
   const system =
     'You are AI Assistant, a concise desktop assistant. Answer normal questions and follow-up questions using the recent chat context. ' +
+    'Before answering calculations, unit conversions, timezone conversions, dates, or factual numeric questions, briefly verify the arithmetic and do not guess. ' +
     'Do not create tasks, reminders, scheduled actions, emails, calls, or app/browser actions in this fallback mode. ' +
     'If the user asks whether a previous live lookup is accurate as of today, explain that it was retrieved from the live lookup at the time it was shown, but market/weather/web data can change and they can ask again to refresh it. ' +
     'If the user asks what commands are supported, tell them to type /help. Keep the answer brief and useful.'

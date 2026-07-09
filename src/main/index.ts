@@ -181,7 +181,7 @@ function tryHelpCommand(text: string, userMessage: Message): AssistantResult | n
       '',
       '- Summarize: `summarize: paste text here` or `summarize this article: https://...`',
       '- Live info: `weather in NYC`, `current market movers`, `top stock gainers`',
-      '- Time: `what time is it in London?`',
+      '- Time: `what time is it in London?` or `convert 5pm PST to EST`',
       '- Tasks: `create a task to call Derek tomorrow at 2pm`',
       '- Reminders: `remind me in 1 hour to leave work`',
       '- Edit/delete: `move that reminder to 10pm`, `delete the meeting task`, `remove all tasks and reminders`',
@@ -219,6 +219,71 @@ function tryTellTimeNow(text: string, userMessage: Message): AssistantResult | n
   }).format(now)
   const suffix = tz.label ? ` in ${tz.label}` : ''
   return addBasicAssistantMessage(userMessage, `It is ${formatted}${suffix}.`)
+}
+
+interface FixedTimeZone {
+  label: string
+  offsetMinutes: number
+}
+
+const FIXED_TIME_ZONES: Record<string, FixedTimeZone> = {
+  pst: { label: 'PST', offsetMinutes: -8 * 60 },
+  pdt: { label: 'PDT', offsetMinutes: -7 * 60 },
+  mst: { label: 'MST', offsetMinutes: -7 * 60 },
+  mdt: { label: 'MDT', offsetMinutes: -6 * 60 },
+  cst: { label: 'CST', offsetMinutes: -6 * 60 },
+  cdt: { label: 'CDT', offsetMinutes: -5 * 60 },
+  est: { label: 'EST', offsetMinutes: -5 * 60 },
+  edt: { label: 'EDT', offsetMinutes: -4 * 60 },
+  pt: { label: 'PT', offsetMinutes: -8 * 60 },
+  mt: { label: 'MT', offsetMinutes: -7 * 60 },
+  ct: { label: 'CT', offsetMinutes: -6 * 60 },
+  et: { label: 'ET', offsetMinutes: -5 * 60 }
+}
+
+function parseFixedTimeZone(value: string): FixedTimeZone | null {
+  return FIXED_TIME_ZONES[value.toLowerCase()] ?? null
+}
+
+function formatConvertedClock(totalMinutes: number): { time: string; dayNote: string } {
+  const dayShift = Math.floor(totalMinutes / 1440)
+  const normalized = ((totalMinutes % 1440) + 1440) % 1440
+  const hour24 = Math.floor(normalized / 60)
+  const minute = normalized % 60
+  const hour12 = hour24 % 12 || 12
+  const meridiem = hour24 >= 12 ? 'PM' : 'AM'
+  const minuteText = minute === 0 ? '' : `:${String(minute).padStart(2, '0')}`
+  const dayNote = dayShift > 0 ? ' next day' : dayShift < 0 ? ' previous day' : ''
+  return { time: `${hour12}${minuteText} ${meridiem}`, dayNote }
+}
+
+function tryConvertTimeZone(text: string, userMessage: Message): AssistantResult | null {
+  const match = text.match(
+    /\b(?:convert|what(?:'s| is)|change)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s+([a-z]{2,4})\s+(?:to|in|into)\s+([a-z]{2,4})\b/i
+  )
+  if (!match) return null
+
+  const source = parseFixedTimeZone(match[4])
+  const target = parseFixedTimeZone(match[5])
+  if (!source || !target) return null
+
+  let hour = Number(match[1])
+  const minute = match[2] ? Number(match[2]) : 0
+  const meridiem = match[3].toLowerCase()
+  if (hour < 1 || hour > 12 || minute < 0 || minute > 59) return null
+  if (meridiem === 'pm' && hour < 12) hour += 12
+  if (meridiem === 'am' && hour === 12) hour = 0
+
+  const sourceMinutes = hour * 60 + minute
+  const targetMinutes = sourceMinutes - source.offsetMinutes + target.offsetMinutes
+  const converted = formatConvertedClock(targetMinutes)
+
+  return addBasicAssistantMessage(
+    userMessage,
+    `${formatConvertedClock(sourceMinutes).time} ${source.label} is ${converted.time} ${
+      target.label
+    }${converted.dayNote}.`
+  )
 }
 
 function timeZoneForText(text: string): { timeZone: string; label: string | null } {
@@ -1712,6 +1777,12 @@ function registerIpc(): void {
     if (helpResult) {
       emit({ type: 'data-changed' })
       return helpResult
+    }
+
+    const timeZoneConversionResult = tryConvertTimeZone(text.trim(), userMessage)
+    if (timeZoneConversionResult) {
+      emit({ type: 'data-changed' })
+      return timeZoneConversionResult
     }
 
     const timeResult = tryTellTimeNow(text.trim(), userMessage)
