@@ -184,6 +184,13 @@ function emit(event: BridgeEvent): void {
   win?.webContents.send('bridge:event', event)
 }
 
+function cleanEmailBodyForDisplay(body: string): string {
+  return body
+    .replace(/\n{1,}\s*(?:Note|Notes|P\.S\. about the draft):[\s\S]*$/i, '')
+    .replace(/\n{1,}\s*\([^)]*(?:removed|changed|adjusted|revised|tone|formal|informal)[^)]*\)\s*$/i, '')
+    .trim()
+}
+
 function formatEmailDraft(email: {
   to?: string
   subject?: string
@@ -192,7 +199,7 @@ function formatEmailDraft(email: {
   const parts = ['Draft email:']
   if (email.to) parts.push(`To: ${email.to}`)
   if (email.subject) parts.push(`Subject: ${email.subject}`)
-  parts.push('', email.body.trim())
+  parts.push('', cleanEmailBodyForDisplay(email.body))
   return parts.join('\n')
 }
 
@@ -465,8 +472,34 @@ function timeZoneForText(text: string): { timeZone: string; label: string | null
   }
 }
 
+function isEmailDraftLikeRequest(text: string): boolean {
+  return (
+    /\b(write|draft|compose|generate|create)\b.*\b(e-?mail|message|reply)\b/i.test(text) ||
+    /\b(e-?mail|message|reply)\s+to\b/i.test(text)
+  )
+}
+
 function isWeatherRequest(text: string): boolean {
-  return /\b(weather|temperature|forecast)\b/i.test(text)
+  return (
+    /\b(weather|temperature|forecast|conditions)\b/i.test(text) ||
+    /\b(what'?s|what is|how'?s|how is)\s+(it|outside)\s+(right now|now|currently)?\s*(in|at|near)\b/i.test(
+      text
+    )
+  )
+}
+
+function normalizeWeatherLocation(location: string): string | null {
+  const cleaned = location
+    .replace(/\b(today|right now|now|currently|outside)\b/gi, ' ')
+    .replace(/\s+(also|and also|plus|with)\b[\s\S]*$/i, ' ')
+    .replace(/\band\s+add\b[\s\S]*$/i, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  if (!cleaned || /^(here|outside|today|now|right now)$/i.test(cleaned)) return null
+  if (/^(nyc|new york city)$/i.test(cleaned)) return 'New York City'
+  if (/^(la)$/i.test(cleaned)) return 'Los Angeles'
+  return cleaned
 }
 
 function extractWeatherLocation(text: string): string | null {
@@ -475,7 +508,9 @@ function extractWeatherLocation(text: string): string | null {
     .replace(/\s+/g, ' ')
     .trim()
 
-  const explicit = cleaned.match(/\b(?:in|for|at|near)\s+(.+)$/i)
+  const explicit = cleaned.match(
+    /\b(?:weather|temperature|forecast|conditions|outside|it)?\s*(?:in|for|at|near)\s+(.+?)(?:\s+(?:today|right now|now|currently|also|and\s+add|please)\b|$)/i
+  )
   let location = explicit?.[1]?.trim()
 
   if (!location) {
@@ -486,15 +521,7 @@ function extractWeatherLocation(text: string): string | null {
       .trim()
   }
 
-  location = location
-    .replace(/\b(today|right now|now|currently|outside)\b/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-
-  if (!location || /^(here|outside|today|now|right now)$/i.test(location)) return null
-  if (/^(nyc|new york city)$/i.test(location)) return 'New York City'
-  if (/^(la)$/i.test(location)) return 'Los Angeles'
-  return location
+  return normalizeWeatherLocation(location)
 }
 
 function weatherDescription(code: number): string {
@@ -515,12 +542,109 @@ function nwsHeaders(): Record<string, string> {
   }
 }
 
-async function tryNwsWeather(
+function celsiusToFahrenheit(value: number): number {
+  return (value * 9) / 5 + 32
+}
+
+function kmhToMph(value: number): number {
+  return value * 0.621371
+}
+
+function metersToInches(value: number): number {
+  return value * 39.3701
+}
+
+function numberValue(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function compassFromDegrees(value: number | null): string | null {
+  if (value === null) return null
+  const directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
+  return directions[Math.round(value / 45) % directions.length]
+}
+
+async function tryNwsObservationText(
+  pointData: { properties?: { observationStations?: string } },
+  place: string
+): Promise<string | null> {
+  const stationsUrl = pointData.properties?.observationStations
+  if (!stationsUrl) return null
+
+  const stationsRes = await fetch(stationsUrl, { headers: nwsHeaders() })
+  if (!stationsRes.ok) throw new Error(`NWS stations API ${stationsRes.status}`)
+  const stationsData = (await stationsRes.json()) as {
+    features?: {
+      id?: string
+      properties?: {
+        stationIdentifier?: string
+        name?: string
+      }
+    }[]
+  }
+
+  for (const station of stationsData.features?.slice(0, 4) ?? []) {
+    const stationUrl =
+      station.id ??
+      (station.properties?.stationIdentifier
+        ? `https://api.weather.gov/stations/${station.properties.stationIdentifier}`
+        : null)
+    if (!stationUrl) continue
+
+    try {
+      const observationRes = await fetch(`${stationUrl}/observations/latest`, {
+        headers: nwsHeaders()
+      })
+      if (!observationRes.ok) continue
+      const observationData = (await observationRes.json()) as {
+        properties?: {
+          textDescription?: string | null
+          temperature?: { value?: number | null }
+          relativeHumidity?: { value?: number | null }
+          windSpeed?: { value?: number | null }
+          windDirection?: { value?: number | null }
+          precipitationLastHour?: { value?: number | null }
+        }
+      }
+      const props = observationData.properties
+      const tempC = numberValue(props?.temperature?.value)
+      if (tempC === null) continue
+
+      const description = props?.textDescription?.trim().toLowerCase() || 'current'
+      const humidity = numberValue(props?.relativeHumidity?.value)
+      const windKmh = numberValue(props?.windSpeed?.value)
+      const windDirection = compassFromDegrees(numberValue(props?.windDirection?.value))
+      const precipMeters = numberValue(props?.precipitationLastHour?.value)
+      const stationName = station.properties?.name?.trim()
+      const humidityText = humidity !== null ? ` Humidity is ${Math.round(humidity)}%.` : ''
+      const windText =
+        windKmh !== null
+          ? ` Wind is ${Math.round(kmhToMph(windKmh))} mph${
+              windDirection ? ` ${windDirection}` : ''
+            }.`
+          : ''
+      const precipText =
+        precipMeters !== null && precipMeters > 0
+          ? ` Rainfall in the last hour is ${metersToInches(precipMeters).toFixed(2)} in.`
+          : ''
+      const stationText = stationName ? ` (${stationName})` : ''
+
+      return `The weather in ${place} is ${description} and ${Math.round(
+        celsiusToFahrenheit(tempC)
+      )}°F.${humidityText}${windText}${precipText}\n\nSource: National Weather Service latest observation${stationText}.`
+    } catch (err) {
+      db.addLog('system', `NWS station observation failed: ${(err as Error).message}`)
+    }
+  }
+
+  return null
+}
+
+async function tryNwsWeatherText(
   latitude: number,
   longitude: number,
-  place: string,
-  userMessage: Message
-): Promise<AssistantResult | null> {
+  place: string
+): Promise<string> {
   const pointRes = await fetch(
     `https://api.weather.gov/points/${latitude.toFixed(4)},${longitude.toFixed(4)}`,
     { headers: nwsHeaders() }
@@ -528,9 +652,13 @@ async function tryNwsWeather(
   if (!pointRes.ok) throw new Error(`NWS points API ${pointRes.status}`)
   const pointData = (await pointRes.json()) as {
     properties?: {
+      observationStations?: string
       forecastHourly?: string
     }
   }
+  const observationText = await tryNwsObservationText(pointData, place)
+  if (observationText) return observationText
+
   const hourlyUrl = pointData.properties?.forecastHourly
   if (!hourlyUrl) throw new Error('NWS hourly forecast URL missing')
 
@@ -569,19 +697,190 @@ async function tryNwsWeather(
       ? ` Wind is ${[current.windDirection, current.windSpeed].filter(Boolean).join(' ')}.`
       : ''
 
-  return addBasicAssistantMessage(
-    userMessage,
-    `The weather in ${place} is ${condition}${Math.round(
-      current.temperature
-    )}°${unit}.${humidity}${wind}${precip}\n\nSource: National Weather Service.`
-  )
+  return `The weather in ${place} is ${condition}${Math.round(
+    current.temperature
+  )}°${unit}.${humidity}${wind}${precip}\n\nSource: National Weather Service hourly forecast.`
+}
+
+interface WeatherGeoMatch {
+  name: string
+  admin1?: string
+  country?: string
+  country_code?: string
+  latitude: number
+  longitude: number
+}
+
+function weatherPlace(match: WeatherGeoMatch): string {
+  return [match.name, match.admin1, match.country].filter(Boolean).join(', ')
+}
+
+async function geocodeWeatherLocation(location: string): Promise<WeatherGeoMatch | null> {
+  const geoUrl =
+    'https://geocoding-api.open-meteo.com/v1/search?' +
+    new URLSearchParams({
+      name: location,
+      count: '1',
+      language: 'en',
+      format: 'json'
+    }).toString()
+  const geoRes = await fetch(geoUrl)
+  if (!geoRes.ok) throw new Error(`Geocoding API ${geoRes.status}`)
+  const geoData = (await geoRes.json()) as {
+    results?: WeatherGeoMatch[]
+  }
+  return geoData.results?.[0] ?? null
+}
+
+async function openMeteoWeatherText(match: WeatherGeoMatch): Promise<string> {
+  const weatherUrl =
+    'https://api.open-meteo.com/v1/forecast?' +
+    new URLSearchParams({
+      latitude: String(match.latitude),
+      longitude: String(match.longitude),
+      current:
+        'temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m',
+      temperature_unit: 'fahrenheit',
+      wind_speed_unit: 'mph',
+      precipitation_unit: 'inch',
+      timezone: 'auto'
+    }).toString()
+  const weatherRes = await fetch(weatherUrl)
+  if (!weatherRes.ok) throw new Error(`Weather API ${weatherRes.status}`)
+  const weatherData = (await weatherRes.json()) as {
+    current?: {
+      temperature_2m?: number
+      apparent_temperature?: number
+      relative_humidity_2m?: number
+      precipitation?: number
+      weather_code?: number
+      wind_speed_10m?: number
+    }
+  }
+  const current = weatherData.current
+  if (!current || typeof current.temperature_2m !== 'number') {
+    throw new Error('Missing current weather data')
+  }
+
+  const description =
+    typeof current.weather_code === 'number' ? weatherDescription(current.weather_code) : 'current'
+  const feels =
+    typeof current.apparent_temperature === 'number'
+      ? `, feels like ${Math.round(current.apparent_temperature)}°F`
+      : ''
+  const humidity =
+    typeof current.relative_humidity_2m === 'number'
+      ? ` Humidity is ${Math.round(current.relative_humidity_2m)}%.`
+      : ''
+  const wind =
+    typeof current.wind_speed_10m === 'number'
+      ? ` Wind is ${Math.round(current.wind_speed_10m)} mph.`
+      : ''
+  const precip =
+    typeof current.precipitation === 'number' && current.precipitation > 0
+      ? ` Precipitation is ${current.precipitation.toFixed(2)} in.`
+      : ''
+
+  return `The weather in ${weatherPlace(match)} is ${description} and ${Math.round(
+    current.temperature_2m
+  )}°F${feels}.${humidity}${wind}${precip}\n\nSource: Open-Meteo current conditions.`
+}
+
+async function lookupWeatherText(location: string): Promise<string | null> {
+  const match = await geocodeWeatherLocation(location)
+  if (!match) return null
+
+  const place = weatherPlace(match)
+  if (match.country_code === 'US' || match.country === 'United States') {
+    try {
+      return await tryNwsWeatherText(match.latitude, match.longitude, place)
+    } catch (err) {
+      db.addLog('system', `NWS weather lookup failed: ${(err as Error).message}`)
+    }
+  }
+
+  return openMeteoWeatherText(match)
+}
+
+function requestedSignature(text: string): string | null {
+  const match = text.match(/\bsignature\s+(?:which\s+would\s+be|as|is|:)?\s+([\s\S]+)$/i)
+  const signature = match?.[1]?.trim()
+  return signature || null
+}
+
+function fallbackWeatherEmailBody(text: string, location: string, weatherText: string): string {
+  const signature = requestedSignature(text) ?? 'Best regards,\n[my name]'
+  return `Hi,\n\nI wanted to send a quick note about the weather in ${location}. ${weatherText.replace(
+    /\n\nSource:[\s\S]+$/i,
+    ''
+  )}\n\n${signature}`
+}
+
+async function tryWeatherEmailDraftNow(
+  text: string,
+  userMessage: Message
+): Promise<AssistantResult | null> {
+  if (!isEmailDraftLikeRequest(text) || !isWeatherRequest(text)) return null
+
+  const location = extractWeatherLocation(text)
+  if (!location) return null
+
+  try {
+    const weatherText = await lookupWeatherText(location)
+    if (!weatherText) {
+      return addBasicAssistantMessage(
+        userMessage,
+        `I couldn't find a weather location for "${location}".`
+      )
+    }
+
+    try {
+      const res = await runAssistant(
+        `${text.trim()}\n\nCurrent weather context to use in the draft:\n${weatherText}\n\nDraft only the email or message requested. Do not create tasks, reminders, or app actions.`
+      )
+      const intent = res.intent === 'generate_email' && res.email ? 'generate_email' : 'general_chat'
+      const responseText =
+        res.intent === 'generate_email' && res.email
+          ? `${res.response.trim()}\n\n${formatEmailDraft(res.email)}`
+          : res.response
+      const assistantMessage = db.addMessage('assistant', responseText, intent)
+      return {
+        userMessage,
+        assistantMessage,
+        intent,
+        email: res.email
+      }
+    } catch (err) {
+      db.addLog('system', `Weather email model draft failed: ${(err as Error).message}`)
+      const email = {
+        body: fallbackWeatherEmailBody(text, location, weatherText)
+      }
+      const assistantMessage = db.addMessage(
+        'assistant',
+        `Here is a draft you can copy and paste.\n\n${formatEmailDraft(email)}`,
+        'generate_email'
+      )
+      return {
+        userMessage,
+        assistantMessage,
+        intent: 'generate_email',
+        email
+      }
+    }
+  } catch (err) {
+    db.addLog('system', `Weather email lookup failed: ${(err as Error).message}`)
+    return addBasicAssistantMessage(
+      userMessage,
+      `I couldn't retrieve the current weather for ${location} right now.`
+    )
+  }
 }
 
 async function tryWeatherNow(
   text: string,
   userMessage: Message
 ): Promise<AssistantResult | null> {
-  if (!isWeatherRequest(text)) return null
+  if (!isWeatherRequest(text) || isEmailDraftLikeRequest(text)) return null
 
   const location = extractWeatherLocation(text)
   if (!location) {
@@ -592,103 +891,14 @@ async function tryWeatherNow(
   }
 
   try {
-    const geoUrl =
-      'https://geocoding-api.open-meteo.com/v1/search?' +
-      new URLSearchParams({
-        name: location,
-        count: '1',
-        language: 'en',
-        format: 'json'
-      }).toString()
-    const geoRes = await fetch(geoUrl)
-    if (!geoRes.ok) throw new Error(`Geocoding API ${geoRes.status}`)
-    const geoData = (await geoRes.json()) as {
-      results?: {
-        name: string
-        admin1?: string
-        country?: string
-        country_code?: string
-        latitude: number
-        longitude: number
-      }[]
-    }
-    const match = geoData.results?.[0]
-    if (!match) {
+    const weatherText = await lookupWeatherText(location)
+    if (!weatherText) {
       return addBasicAssistantMessage(
         userMessage,
         `I couldn't find a weather location for "${location}".`
       )
     }
-
-    const place = [match.name, match.admin1, match.country].filter(Boolean).join(', ')
-    if (match.country_code === 'US' || match.country === 'United States') {
-      try {
-        const nwsResult = await tryNwsWeather(
-          match.latitude,
-          match.longitude,
-          place,
-          userMessage
-        )
-        if (nwsResult) return nwsResult
-      } catch (err) {
-        db.addLog('system', `NWS weather lookup failed: ${(err as Error).message}`)
-      }
-    }
-
-    const weatherUrl =
-      'https://api.open-meteo.com/v1/forecast?' +
-      new URLSearchParams({
-        latitude: String(match.latitude),
-        longitude: String(match.longitude),
-        current:
-          'temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m',
-        temperature_unit: 'fahrenheit',
-        wind_speed_unit: 'mph',
-        precipitation_unit: 'inch',
-        timezone: 'auto'
-      }).toString()
-    const weatherRes = await fetch(weatherUrl)
-    if (!weatherRes.ok) throw new Error(`Weather API ${weatherRes.status}`)
-    const weatherData = (await weatherRes.json()) as {
-      current?: {
-        temperature_2m?: number
-        apparent_temperature?: number
-        relative_humidity_2m?: number
-        precipitation?: number
-        weather_code?: number
-        wind_speed_10m?: number
-      }
-    }
-    const current = weatherData.current
-    if (!current || typeof current.temperature_2m !== 'number') {
-      throw new Error('Missing current weather data')
-    }
-
-    const description =
-      typeof current.weather_code === 'number' ? weatherDescription(current.weather_code) : 'current'
-    const feels =
-      typeof current.apparent_temperature === 'number'
-        ? `, feels like ${Math.round(current.apparent_temperature)}°F`
-        : ''
-    const humidity =
-      typeof current.relative_humidity_2m === 'number'
-        ? ` Humidity is ${Math.round(current.relative_humidity_2m)}%.`
-        : ''
-    const wind =
-      typeof current.wind_speed_10m === 'number'
-        ? ` Wind is ${Math.round(current.wind_speed_10m)} mph.`
-        : ''
-    const precip =
-      typeof current.precipitation === 'number' && current.precipitation > 0
-        ? ` Precipitation is ${current.precipitation.toFixed(2)} in.`
-        : ''
-
-    return addBasicAssistantMessage(
-      userMessage,
-      `The weather in ${place} is ${description} and ${Math.round(
-        current.temperature_2m
-      )}°F${feels}.${humidity}${wind}${precip}`
-    )
+    return addBasicAssistantMessage(userMessage, weatherText)
   } catch (err) {
     db.addLog('system', `Weather lookup failed: ${(err as Error).message}`)
     return addBasicAssistantMessage(
@@ -1122,6 +1332,75 @@ function isTaskRequest(text: string): boolean {
     /\b(set|create|add|make)\s+(a\s+)?(new\s+)?(task|todo|to-do)\b/.test(lower) ||
     /\bschedule\b/.test(lower)
   )
+}
+
+function isFollowUpEmailTaskRequest(text: string): boolean {
+  return (
+    /\b(add|create|make|set)\b[\s\S]*\b(this|that|it|action|email|draft)\b[\s\S]*\b(task|todo|to-do)\b/i.test(
+      text
+    ) ||
+    /\b(add|create|make|set)\b[\s\S]*\b(task|todo|to-do)\b[\s\S]*\b(for|from)\b[\s\S]*\b(this|that|email|draft)\b/i.test(
+      text
+    )
+  )
+}
+
+function latestEmailDraftMessage(): Message | null {
+  const messages = db.listMessages(30)
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i]
+    if (message.role === 'assistant' && message.intent === 'generate_email') return message
+  }
+  return null
+}
+
+function emailTaskTitleFromDraft(content: string): string {
+  const to = content.match(/^\s*To:\s*(.+)$/im)?.[1]?.trim()
+  if (to) return `Send email to ${to}`
+
+  const bodyStart = content.match(/(?:^|\n)Draft email:\s*/i)
+  const rawBody = bodyStart ? content.slice((bodyStart.index ?? 0) + bodyStart[0].length) : content
+  const body = rawBody
+    .split('\n')
+    .filter((line) => !/^\s*(To|Subject):\s*/i.test(line))
+    .join('\n')
+    .trim()
+  const greeting = body.match(/^\s*(?:hi|hey|dear|hello)\s+([^,\n.!?]+)/i)?.[1]?.trim()
+  if (greeting && !/^(there|everyone|all)$/i.test(greeting)) {
+    return `Send email to ${greeting}`
+  }
+
+  const subject = content.match(/^\s*Subject:\s*(.+)$/im)?.[1]?.trim()
+  if (subject) return `Send email: ${subject}`
+  return 'Send last email draft'
+}
+
+function tryCreateFollowUpEmailTaskNow(text: string, userMessage: Message): AssistantResult | null {
+  if (!isFollowUpEmailTaskRequest(text)) return null
+
+  const draftMessage = latestEmailDraftMessage()
+  if (!draftMessage) return null
+
+  const title = emailTaskTitleFromDraft(draftMessage.content)
+  const due = parseDateFromTaskText(text)
+  db.addTask(title, due)
+  syncTaskToMacCalendar(title, due)
+  const dueText = due ? ` It is due ${new Date(due).toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  })}.` : ''
+  const assistantMessage = db.addMessage(
+    'assistant',
+    `Created task: ${title}.${dueText}`,
+    'create_task'
+  )
+  return {
+    userMessage,
+    assistantMessage,
+    intent: 'create_task'
+  }
 }
 
 function tryCreateTaskNow(text: string, userMessage: Message): AssistantResult | null {
@@ -2154,6 +2433,12 @@ function registerIpc(): void {
       return timeResult
     }
 
+    const weatherEmailResult = await tryWeatherEmailDraftNow(text.trim(), userMessage)
+    if (weatherEmailResult) {
+      emit({ type: 'data-changed' })
+      return weatherEmailResult
+    }
+
     const weatherResult = await tryWeatherNow(text.trim(), userMessage)
     if (weatherResult) {
       emit({ type: 'data-changed' })
@@ -2218,6 +2503,12 @@ function registerIpc(): void {
     if (clearTasksRemindersResult) {
       emit({ type: 'data-changed' })
       return clearTasksRemindersResult
+    }
+
+    const followUpEmailTaskResult = tryCreateFollowUpEmailTaskNow(text.trim(), userMessage)
+    if (followUpEmailTaskResult) {
+      emit({ type: 'data-changed' })
+      return followUpEmailTaskResult
     }
 
     const removeReminderResult = tryRemoveReminderNow(text.trim(), userMessage)

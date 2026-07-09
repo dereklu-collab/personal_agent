@@ -372,6 +372,8 @@ function cleanStyledEmailBody(text: string): string {
       /^(?:here(?:\s+is|'s|\u2019s)\s+)?(?:the\s+)?(?:revised\s+)?(?:email\s+)?(?:body|draft)\s*:?\s*/i,
       ''
     )
+    .replace(/\n{1,}\s*(?:Note|Notes|P\.S\. about the draft):[\s\S]*$/i, '')
+    .replace(/\n{1,}\s*\([^)]*(?:removed|changed|adjusted|revised|tone|formal|informal)[^)]*\)\s*$/i, '')
     .trim()
 }
 
@@ -388,7 +390,8 @@ async function applyWritingStyleToEmail(
     'You are an email style editor. Revise the provided draft so it matches the saved writing style profile. ' +
     'Preserve the same recipient, purpose, facts, names, dates, locations, and ask. ' +
     'Lightly fix grammar and clarity, but do not completely rewrite the message or add new details. ' +
-    'Use the profile greeting/sign-off habits when present. Output only the revised email body.'
+    'Use the profile greeting/sign-off habits when present. Output only the revised email body. ' +
+    'Do not include notes, explanations, labels, commentary, or reasons for changes.'
 
   const userText = `Saved writing style profile:
 ${profile.summary}
