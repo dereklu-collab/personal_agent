@@ -302,7 +302,7 @@ function tryHelpCommand(text: string, userMessage: Message): AssistantResult | n
       'Here are useful things you can ask me to do:',
       '',
       '- Summarize: `summarize: paste text here` or `summarize this article: https://...`',
-      '- Live info: `weather in NYC`, `current market movers`, `top stock gainers`',
+      '- Live info: `weather in NYC`, `META stock price`, `current market movers`',
       '- Time: `what time is it in London?`, `convert 5pm PST to EST`, or `when is 5-7pm PST to EST`',
       '- Tasks: `create a task to call Derek tomorrow at 2pm`',
       '- Reminders: `remind me in 1 hour to leave work`',
@@ -918,6 +918,42 @@ interface MarketMover {
   changePercent: number | null
 }
 
+interface StockQuote {
+  symbol: string
+  name: string
+  price: number | null
+  currency: string
+  change: number | null
+  changePercent: number | null
+  marketState: string | null
+  exchange: string | null
+}
+
+const COMPANY_TICKERS: Record<string, string> = {
+  meta: 'META',
+  facebook: 'META',
+  apple: 'AAPL',
+  microsoft: 'MSFT',
+  google: 'GOOGL',
+  alphabet: 'GOOGL',
+  amazon: 'AMZN',
+  tesla: 'TSLA',
+  nvidia: 'NVDA',
+  netflix: 'NFLX',
+  amd: 'AMD',
+  intel: 'INTC',
+  paypal: 'PYPL',
+  salesforce: 'CRM',
+  oracle: 'ORCL',
+  walmart: 'WMT',
+  disney: 'DIS',
+  boeing: 'BA',
+  nike: 'NKE',
+  spotify: 'SPOT',
+  coinbase: 'COIN',
+  robinhood: 'HOOD'
+}
+
 function isMarketMoversRequest(text: string): boolean {
   const lower = text.toLowerCase()
   const hasMarketTerm = /\b(stock|stocks|market|markets|equity|equities|ticker|tickers)\b/.test(
@@ -934,6 +970,15 @@ function isMarketMoversRequest(text: string): boolean {
   )
 }
 
+function isStockQuoteRequest(text: string): boolean {
+  const lower = text.toLowerCase()
+  if (isMarketMoversRequest(text)) return false
+  return (
+    /\b(stock|stocks|share|shares|ticker|quote|market cap|finance|yahoo finance)\b/.test(lower) &&
+    /\b(price|worth|trading|quote|check|current|right now|today|api)\b/.test(lower)
+  )
+}
+
 function wantsOnlyGainers(text: string): boolean {
   const lower = text.toLowerCase()
   return /\b(gainer|gainers|up|winner|winners|best)\b/.test(lower) && !wantsOnlyLosers(text)
@@ -946,6 +991,202 @@ function wantsOnlyLosers(text: string): boolean {
 
 function readNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function directTickerFromText(text: string): string | null {
+  const cashTicker = text.match(/\$([A-Z]{1,6})(?:\b|$)/)
+  if (cashTicker?.[1]) return cashTicker[1]
+
+  const lower = text.toLowerCase()
+  for (const [name, symbol] of Object.entries(COMPANY_TICKERS)) {
+    if (new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(lower)) {
+      return symbol
+    }
+  }
+
+  const explicitTicker = text.match(/\b(?:ticker|symbol|stock)\s+([A-Z]{1,6})\b/)
+  if (explicitTicker?.[1]) return explicitTicker[1]
+
+  const allCaps = text.match(/\b[A-Z]{2,5}\b/g) ?? []
+  const ignored = new Set(['API', 'USD', 'NYSE', 'NASDAQ', 'ETF'])
+  return allCaps.find((candidate) => !ignored.has(candidate)) ?? null
+}
+
+function stockSearchTermFromText(text: string): string | null {
+  const cleaned = text
+    .replace(/\$[A-Z]{1,6}\b/g, ' ')
+    .replace(/\b(what'?s|what is|can you|could you|please|yes|check|for me|use|using)\b/gi, ' ')
+    .replace(/\b(the|a|an|current|right now|today|latest|live|real time|real-time)\b/gi, ' ')
+    .replace(/\b(stock|stocks|share|shares|ticker|quote|price|worth|trading|finance|yahoo|api|information)\b/gi, ' ')
+    .replace(/[?.!,']/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return cleaned.length >= 2 ? cleaned : null
+}
+
+function latestStockTickerFromHistory(currentMessageId: number): string | null {
+  const messages = db.listMessages(20)
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i]
+    if (message.id === currentMessageId) continue
+    if (message.role === 'assistant') {
+      const sourceQuote = message.content.match(/\b([A-Z]{1,6})\b[\s\S]*Source: Yahoo Finance/i)
+      if (sourceQuote?.[1]) return sourceQuote[1]
+      continue
+    }
+    if (message.role === 'user' && isStockQuoteRequest(message.content)) {
+      const symbol = directTickerFromText(message.content)
+      if (symbol) return symbol
+    }
+  }
+  return null
+}
+
+function isStockQuoteFollowUp(text: string): boolean {
+  return /\b(yes|yeah|yep|sure|ok|okay|check|check it|check for me|use yahoo|yahoo finance|use the api|api)\b/i.test(
+    text
+  )
+}
+
+async function resolveStockSymbol(text: string, userMessage: Message): Promise<string | null> {
+  const direct = directTickerFromText(text)
+  if (direct) return direct
+
+  if (isStockQuoteFollowUp(text)) {
+    const previous = latestStockTickerFromHistory(userMessage.id)
+    if (previous) return previous
+  }
+
+  const searchTerm = stockSearchTermFromText(text)
+  if (!searchTerm) return null
+
+  const searchUrl =
+    'https://query2.finance.yahoo.com/v1/finance/search?' +
+    new URLSearchParams({
+      q: searchTerm,
+      quotesCount: '1',
+      newsCount: '0'
+    }).toString()
+  const searchRes = await fetch(searchUrl, {
+    headers: {
+      'user-agent': 'AI Assistant desktop app'
+    }
+  })
+  if (!searchRes.ok) throw new Error(`Yahoo Finance search failed with ${searchRes.status}`)
+  const data = (await searchRes.json()) as {
+    quotes?: {
+      symbol?: unknown
+      quoteType?: unknown
+      typeDisp?: unknown
+    }[]
+  }
+  const quote = data.quotes?.find((item) => {
+    const quoteType = typeof item.quoteType === 'string' ? item.quoteType.toLowerCase() : ''
+    const typeDisp = typeof item.typeDisp === 'string' ? item.typeDisp.toLowerCase() : ''
+    return quoteType === 'equity' || typeDisp === 'equity'
+  })
+  return typeof quote?.symbol === 'string' ? quote.symbol.trim().toUpperCase() : null
+}
+
+async function fetchStockQuote(symbol: string): Promise<StockQuote | null> {
+  const url =
+    'https://query1.finance.yahoo.com/v7/finance/quote?' +
+    new URLSearchParams({
+      symbols: symbol
+    }).toString()
+  const res = await fetch(url, {
+    headers: {
+      'user-agent': 'AI Assistant desktop app'
+    }
+  })
+  if (!res.ok) throw new Error(`Yahoo Finance quote failed with ${res.status}`)
+  const data = (await res.json()) as {
+    quoteResponse?: {
+      result?: {
+        symbol?: unknown
+        shortName?: unknown
+        longName?: unknown
+        displayName?: unknown
+        regularMarketPrice?: unknown
+        regularMarketChange?: unknown
+        regularMarketChangePercent?: unknown
+        currency?: unknown
+        marketState?: unknown
+        fullExchangeName?: unknown
+      }[]
+    }
+  }
+  const quote = data.quoteResponse?.result?.[0]
+  if (!quote) return null
+
+  const resolvedSymbol = typeof quote.symbol === 'string' ? quote.symbol.trim() : symbol
+  const fallbackName =
+    typeof quote.shortName === 'string'
+      ? quote.shortName
+      : typeof quote.longName === 'string'
+        ? quote.longName
+        : typeof quote.displayName === 'string'
+          ? quote.displayName
+          : resolvedSymbol
+
+  return {
+    symbol: resolvedSymbol,
+    name: fallbackName.trim(),
+    price: readNumber(quote.regularMarketPrice),
+    currency: typeof quote.currency === 'string' ? quote.currency : 'USD',
+    change: readNumber(quote.regularMarketChange),
+    changePercent: readNumber(quote.regularMarketChangePercent),
+    marketState: typeof quote.marketState === 'string' ? quote.marketState : null,
+    exchange: typeof quote.fullExchangeName === 'string' ? quote.fullExchangeName : null
+  }
+}
+
+function formatStockQuote(quote: StockQuote): string {
+  const price = quote.price === null ? 'not currently available' : `${quote.currency} ${quote.price.toFixed(2)}`
+  const change =
+    quote.change === null
+      ? ''
+      : `, ${quote.change >= 0 ? '+' : ''}${quote.change.toFixed(2)}`
+  const changePercent =
+    quote.changePercent === null
+      ? ''
+      : ` (${quote.changePercent >= 0 ? '+' : ''}${quote.changePercent.toFixed(2)}%)`
+  const exchange = quote.exchange ? ` on ${quote.exchange}` : ''
+  const marketState = quote.marketState ? ` Market state: ${quote.marketState}.` : ''
+  return `${quote.symbol} (${quote.name}) is trading at ${price}${change}${changePercent}${exchange}.${marketState}\n\nSource: Yahoo Finance quote API. This is informational only, not financial advice.`
+}
+
+async function tryStockQuoteNow(
+  text: string,
+  userMessage: Message
+): Promise<AssistantResult | null> {
+  if (!isStockQuoteRequest(text) && !isStockQuoteFollowUp(text)) return null
+
+  try {
+    const symbol = await resolveStockSymbol(text, userMessage)
+    if (!symbol) {
+      return addBasicAssistantMessage(
+        userMessage,
+        'Which stock ticker or company should I check?'
+      )
+    }
+
+    const quote = await fetchStockQuote(symbol)
+    if (!quote) {
+      return addBasicAssistantMessage(
+        userMessage,
+        `I couldn't find a Yahoo Finance quote for "${symbol}".`
+      )
+    }
+
+    return addBasicAssistantMessage(userMessage, formatStockQuote(quote))
+  } catch (err) {
+    db.addLog('system', `Stock quote lookup failed: ${(err as Error).message}`)
+    return addBasicAssistantMessage(
+      userMessage,
+      "I couldn't retrieve that stock quote from Yahoo Finance right now. Please try again in a moment."
+    )
+  }
 }
 
 async function fetchMarketMovers(screenerId: YahooScreenerId): Promise<MarketMover[]> {
@@ -2443,6 +2684,12 @@ function registerIpc(): void {
     if (weatherResult) {
       emit({ type: 'data-changed' })
       return weatherResult
+    }
+
+    const stockQuoteResult = await tryStockQuoteNow(text.trim(), userMessage)
+    if (stockQuoteResult) {
+      emit({ type: 'data-changed' })
+      return stockQuoteResult
     }
 
     const marketMoversResult = await tryMarketMoversNow(text.trim(), userMessage)
