@@ -134,13 +134,21 @@ export default function App() {
       ['pending', 'approved', 'awaiting_confirm'].includes(a.status)
     ).length
 
+  const hasOverdueTask = tasks.some((t) => {
+    if (t.done || t.due === null) return false
+    const due = Date.parse(t.due)
+    return !Number.isNaN(due) && due < Date.now()
+  })
+
   const status: Status = sending
     ? 'thinking'
     : listening
       ? 'listening'
-      : confirmAction
-        ? 'due'
-        : 'idle'
+      : hasOverdueTask
+        ? 'overdue'
+        : confirmAction
+          ? 'due'
+          : 'idle'
 
   // First run → onboarding takes the whole panel.
   const needsOnboarding = settings && !settings.onboarded

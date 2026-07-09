@@ -1,7 +1,7 @@
 import { useRef } from 'react'
 import type { PointerEvent, ReactNode } from 'react'
 
-export type Status = 'idle' | 'thinking' | 'listening' | 'due'
+export type Status = 'idle' | 'thinking' | 'listening' | 'due' | 'overdue'
 type ResizeEdge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 
 interface Props {

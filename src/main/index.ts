@@ -26,8 +26,9 @@ let expanded = false
 let resizeSaveTimer: ReturnType<typeof setTimeout> | null = null
 
 const COLLAPSED = { width: 168, height: 64 }
-const EXPANDED_DEFAULT = { width: 348, height: 500 }
-const EXPANDED_MIN = { width: 320, height: 380 }
+const LEGACY_EXPANDED_DEFAULT = { width: 348, height: 500 }
+const EXPANDED_DEFAULT = { width: 312, height: 430 }
+const EXPANDED_MIN = { width: 276, height: 300 }
 const EXPANDED_MAX = { width: 720, height: 900 }
 const MARGIN = 16
 
@@ -43,7 +44,15 @@ function clampSize(
 }
 
 function expandedWindowSize(): { width: number; height: number } {
-  return clampSize(db.getExpandedWindowSize() ?? EXPANDED_DEFAULT)
+  const saved = db.getExpandedWindowSize()
+  if (
+    saved &&
+    saved.width === LEGACY_EXPANDED_DEFAULT.width &&
+    saved.height === LEGACY_EXPANDED_DEFAULT.height
+  ) {
+    return EXPANDED_DEFAULT
+  }
+  return clampSize(saved ?? EXPANDED_DEFAULT)
 }
 
 function positionFor(size: { width: number; height: number }): {

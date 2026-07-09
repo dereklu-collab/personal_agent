@@ -138,6 +138,10 @@ button {
 .dot.due {
   background: var(--warn);
 }
+.dot.overdue {
+  background: var(--danger);
+  animation: pulse-danger 1.4s ease-in-out infinite;
+}
 @keyframes pulse {
   0%,
   100% {
@@ -145,6 +149,15 @@ button {
   }
   50% {
     box-shadow: 0 0 0 6px var(--accent-soft);
+  }
+}
+@keyframes pulse-danger {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(255, 107, 122, 0.18);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(255, 107, 122, 0.18);
   }
 }
 
