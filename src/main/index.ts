@@ -537,12 +537,18 @@ function parseTimeOnlyUpdate(text: string, baseIso: string): string | null {
 function cleanTaskTitle(text: string): string {
   let title = text
     .replace(/^\s*(hi|hey|hello)[,!]?\s+/i, '')
+    .replace(/^(can you|could you|please|for me)\s+/i, '')
     .replace(/\bin\s+\d+\s*(minute|minutes|min|hour|hours|hr|hrs|day|days)\b/gi, '')
     .replace(/\b(?:on\s+)?\d{1,2}\/\d{1,2}\/\d{2,4}(?:\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/gi, '')
     .replace(/\btomorrow(?:\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/gi, '')
+    .replace(/\b(task|todo|to-do)\s+and\s+reminder\s+(to|for|about)\b/gi, '$2')
+    .replace(/\breminder\s+and\s+(task|todo|to-do)\s+(to|for|about)\b/gi, '$2')
+    .replace(/\b(task|todo|to-do)\s+and\s+reminder\b/gi, ' ')
+    .replace(/\breminder\s+and\s+(task|todo|to-do)\b/gi, ' ')
     .replace(/^(please\s+)?(create|add|make)\s+(a\s+)?(new\s+)?(task|todo|to-do)\s*/i, '')
     .replace(/^(please\s+)?(create|add|make)\s+(a\s+)?(new\s+)?(task|todo|to-do)\s+(to|for|called|named)\s*/i, '')
     .replace(/^(please\s+)?schedule\s+(a\s+)?/i, '')
+    .replace(/\b(and|as well)\b/gi, ' ')
     .replace(/\s+(as|like)\s+(a\s+)?(task|todo|to-do)\b/gi, '')
     .replace(/\s+(for me|for myself)\b/gi, '')
     .replace(/\b(task|todo|to-do)\s+(for|to)\b/gi, '')
@@ -589,6 +595,50 @@ function tryCreateTaskNow(text: string, userMessage: Message): AssistantResult |
     userMessage,
     assistantMessage,
     intent: 'create_task'
+  }
+}
+
+function isTaskAndReminderRequest(text: string): boolean {
+  const lower = text.toLowerCase()
+  return (
+    /\b(task|todo|to-do)\b/.test(lower) &&
+    /\breminder\b/.test(lower) &&
+    /\b(create|add|make|schedule|set)\b/.test(lower)
+  )
+}
+
+function tryCreateTaskAndReminderNow(text: string, userMessage: Message): AssistantResult | null {
+  if (!isTaskAndReminderRequest(text)) return null
+
+  const datetime = parseDateFromTaskText(text)
+  if (!datetime) {
+    const assistantMessage = db.addMessage(
+      'assistant',
+      'When should I schedule the task and reminder?',
+      'create_reminder'
+    )
+    return {
+      userMessage,
+      assistantMessage,
+      intent: 'create_reminder'
+    }
+  }
+
+  const title = cleanTaskTitle(text)
+  if (!title || /^(it|this|that)$/i.test(title)) return null
+
+  db.addTask(title, datetime)
+  db.addReminder(title, datetime, 'none')
+  const when = formatReminderTime(datetime)
+  const assistantMessage = db.addMessage(
+    'assistant',
+    `Created task and reminder: ${title}. It is scheduled for ${when}.`,
+    'create_reminder'
+  )
+  return {
+    userMessage,
+    assistantMessage,
+    intent: 'create_reminder'
   }
 }
 
@@ -880,6 +930,7 @@ function cleanReminderTitle(text: string): string {
     .replace(/^remind\s+me\s*/i, '')
     .replace(/^(to|for|about)\s+/i, '')
     .replace(/^(a|an|the)\s+/i, '')
+    .replace(/\b(as well|also|too)\b/gi, ' ')
     .replace(/\s+(for me|for myself)\b/gi, '')
     .replace(/\s+/g, ' ')
     .trim()
@@ -915,10 +966,26 @@ function pendingReminderTitle(userMessage: Message): string | null {
   return match?.[1]?.trim() ?? null
 }
 
+function pendingReminderTitleFromLastTask(userMessage: Message): string | null {
+  const previousAssistant = db
+    .listMessages(8)
+    .filter(
+      (m) =>
+        m.id < userMessage.id &&
+        m.role === 'assistant' &&
+        m.intent === 'create_reminder' &&
+        /^When should I remind you about (?:as well|also|too)\?$/i.test(m.content)
+    )
+    .at(-1)
+
+  if (!previousAssistant) return null
+  return lastCreatedTaskTitle(userMessage)
+}
+
 function tryCompletePendingReminder(text: string, userMessage: Message): AssistantResult | null {
   if (isReminderRequest(text)) return null
 
-  const title = pendingReminderTitle(userMessage)
+  const title = pendingReminderTitle(userMessage) ?? pendingReminderTitleFromLastTask(userMessage)
   if (!title) return null
 
   const datetime = parseDateFromTaskText(text)
@@ -1088,11 +1155,55 @@ function tryCompleteReminderRemoval(text: string, userMessage: Message): Assista
   return removeReminderByTitle(title || null, userMessage)
 }
 
+function isBulkTaskReminderClearRequest(text: string): boolean {
+  const lower = text.toLowerCase()
+  if (!/\b(remove|delete|clear|dismiss|cancel)\b/.test(lower)) return false
+  if (!/\b(all|everything|every)\b/.test(lower)) return false
+  return /\b(tasks?|todos?|to-dos?|reminders?)\b/.test(lower)
+}
+
+function tryClearTasksAndRemindersNow(
+  text: string,
+  userMessage: Message
+): AssistantResult | null {
+  if (!isBulkTaskReminderClearRequest(text)) return null
+
+  const lower = text.toLowerCase()
+  const shouldClearTasks = /\b(tasks?|todos?|to-dos?)\b/.test(lower)
+  const shouldClearReminders = /\breminders?\b/.test(lower)
+  const tasks = shouldClearTasks ? db.listTasks() : []
+  const reminders = shouldClearReminders ? db.listReminders() : []
+
+  for (const task of tasks) db.deleteTask(task.id)
+  for (const reminder of reminders) db.dismissReminder(reminder.id)
+
+  const parts: string[] = []
+  if (shouldClearTasks) parts.push(`${tasks.length} task${tasks.length === 1 ? '' : 's'}`)
+  if (shouldClearReminders)
+    parts.push(`${reminders.length} reminder${reminders.length === 1 ? '' : 's'}`)
+
+  const assistantMessage = db.addMessage(
+    'assistant',
+    parts.length
+      ? `Removed ${parts.join(' and ')}.`
+      : 'There was nothing to remove.',
+    shouldClearReminders ? 'create_reminder' : 'create_task'
+  )
+  return {
+    userMessage,
+    assistantMessage,
+    intent: shouldClearReminders ? 'create_reminder' : 'create_task'
+  }
+}
+
 function tryCreateReminderNow(text: string, userMessage: Message): AssistantResult | null {
   if (!isReminderRequest(text)) return null
   const datetime = parseDateFromTaskText(text)
   let title = cleanReminderTitle(text)
   if (/^(it|this|that)$/i.test(title)) title = ''
+  if (/\b(as well|also|too)\b/i.test(text) && !title) {
+    title = lastCreatedTaskTitle(userMessage) ?? ''
+  }
 
   if (!datetime) {
     const message = title
@@ -1442,6 +1553,12 @@ function registerIpc(): void {
       return immediateOpenResult
     }
 
+    const clearTasksRemindersResult = tryClearTasksAndRemindersNow(text.trim(), userMessage)
+    if (clearTasksRemindersResult) {
+      emit({ type: 'data-changed' })
+      return clearTasksRemindersResult
+    }
+
     const removeReminderResult = tryRemoveReminderNow(text.trim(), userMessage)
     if (removeReminderResult) {
       emit({ type: 'data-changed' })
@@ -1452,6 +1569,12 @@ function registerIpc(): void {
     if (pendingReminderResult) {
       emit({ type: 'data-changed' })
       return pendingReminderResult
+    }
+
+    const combinedTaskReminderResult = tryCreateTaskAndReminderNow(text.trim(), userMessage)
+    if (combinedTaskReminderResult) {
+      emit({ type: 'data-changed' })
+      return combinedTaskReminderResult
     }
 
     const immediateReminderResult = tryCreateReminderNow(text.trim(), userMessage)
