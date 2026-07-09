@@ -20,6 +20,7 @@ import {
   AssistantError
 } from './assistant'
 import { startScheduler, stopScheduler, executeAction } from './scheduler'
+import { createMacCalendarEventForTask, createMacReminder } from './macNative'
 
 let win: BrowserWindow | null = null
 let expanded = false
@@ -188,6 +189,23 @@ function formatEmailDraft(email: {
   if (email.subject) parts.push(`Subject: ${email.subject}`)
   parts.push('', email.body.trim())
   return parts.join('\n')
+}
+
+function syncTaskToMacCalendar(title: string, due: string | null): void {
+  if (!due) return
+  void createMacCalendarEventForTask(title, due).then((result) => {
+    if (!result.ok && !result.skipped) {
+      db.addLog('system', `Calendar sync failed for task "${title}": ${result.reason}`)
+    }
+  })
+}
+
+function syncReminderToMac(title: string, datetime: string): void {
+  void createMacReminder(title, datetime).then((result) => {
+    if (!result.ok && !result.skipped) {
+      db.addLog('system', `Reminders sync failed for "${title}": ${result.reason}`)
+    }
+  })
 }
 
 function hasImmediateOpenIntent(text: string): boolean {
@@ -920,6 +938,7 @@ function tryCreateTaskNow(text: string, userMessage: Message): AssistantResult |
 
   const due = parseDateFromTaskText(text)
   db.addTask(title, due)
+  syncTaskToMacCalendar(title, due)
   const dueText = due ? ` It is due ${new Date(due).toLocaleString([], {
     month: 'short',
     day: 'numeric',
@@ -969,6 +988,8 @@ function tryCreateTaskAndReminderNow(text: string, userMessage: Message): Assist
 
   db.addTask(title, datetime)
   db.addReminder(title, datetime, 'none')
+  syncTaskToMacCalendar(title, datetime)
+  syncReminderToMac(title, datetime)
   const when = formatReminderTime(datetime)
   const assistantMessage = db.addMessage(
     'assistant',
@@ -1346,6 +1367,7 @@ function tryCompletePendingReminder(text: string, userMessage: Message): Assista
   }
 
   db.addReminder(title, datetime, 'none')
+  syncReminderToMac(title, datetime)
   const assistantMessage = db.addMessage(
     'assistant',
     `Reminder set: ${title}. I’ll remind you ${formatReminderTime(datetime)}.`,
@@ -1563,6 +1585,7 @@ function tryCreateReminderNow(text: string, userMessage: Message): AssistantResu
   if (!title) title = 'Reminder'
 
   db.addReminder(title, datetime, 'none')
+  syncReminderToMac(title, datetime)
   const assistantMessage = db.addMessage(
     'assistant',
     `Reminder set: ${title}. I’ll remind you ${formatReminderTime(datetime)}.`,
@@ -2049,9 +2072,15 @@ function registerIpc(): void {
     const scheduledActionsToCreate =
       res.intent === 'schedule_app_open' ? res.scheduledActions : []
 
-    for (const t of tasksToCreate) db.addTask(t.title, t.due ?? null)
-    for (const r of remindersToCreate)
+    for (const t of tasksToCreate) {
+      const due = t.due ?? null
+      db.addTask(t.title, due)
+      syncTaskToMacCalendar(t.title, due)
+    }
+    for (const r of remindersToCreate) {
       db.addReminder(r.title, r.datetime, r.recurrence)
+      syncReminderToMac(r.title, r.datetime)
+    }
 
     const rejected: string[] = []
     for (const sa of scheduledActionsToCreate) {
