@@ -50,8 +50,27 @@ export function ChatPanel({
     shouldAutoScrollRef.current = distanceFromBottom < 32
   }
 
+  function emailBodyForCopy(content: string): string {
+    const draftStart = content.match(/(?:^|\n)Draft email:\s*/i)
+    const rawDraft = draftStart
+      ? content.slice((draftStart.index ?? 0) + draftStart[0].length)
+      : content
+    const lines = rawDraft
+      .split('\n')
+      .filter((line) => !/^\s*(To|Subject):\s*/i.test(line))
+    return lines
+      .join('\n')
+      .replace(
+        /^\s*(?:here\s+is\s+)?(?:the\s+)?(?:revised\s+)?(?:email\s+)?(?:body|draft)\s*:?\s*/i,
+        ''
+      )
+      .trim()
+  }
+
   async function copyMessage(message: Message): Promise<void> {
-    await navigator.clipboard.writeText(message.content)
+    const text =
+      message.intent === 'generate_email' ? emailBodyForCopy(message.content) : message.content
+    await navigator.clipboard.writeText(text)
     setCopiedId(message.id)
     setTimeout(() => setCopiedId(null), 1500)
   }

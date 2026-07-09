@@ -394,6 +394,10 @@ export function getWritingProfile(): WritingProfile | null {
   return row ? { summary: row.summary, updatedAt: row.updated_at } : null
 }
 
+export function clearWritingProfile(): void {
+  db.prepare('DELETE FROM writing_profile WHERE id = 1').run()
+}
+
 // ---------- logs ----------
 function rowToLog(r: any): ActionLog {
   return { id: r.id, kind: r.kind, message: r.message, createdAt: r.created_at }

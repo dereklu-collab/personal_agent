@@ -195,9 +195,19 @@ function tryHelpCommand(text: string, userMessage: Message): AssistantResult | n
 
 function tryTellTimeNow(text: string, userMessage: Message): AssistantResult | null {
   const lower = text.toLowerCase()
+  const asksForTravelTime =
+    /\b(walk|walking|drive|driving|transit|train|subway|bus|bike|biking|distance|route|directions?)\b/.test(
+      lower
+    )
+  if (asksForTravelTime) return null
+
   const isTimeRequest =
-    /\b(what'?s|what is|tell me|current|local)\b.*\b(time|date|day)\b/.test(lower) ||
-    /\b(time|date) now\b/.test(lower)
+    /\b(what'?s|what is|tell me|show me|give me)\b.*\b(?:the\s+)?(?:current\s+|local\s+)?(time|date|day)\b/.test(
+      lower
+    ) ||
+    /\b(what time is it|what'?s the time|time now|date now|current time|local time|current date|today'?s date)\b/.test(
+      lower
+    )
   if (!isTimeRequest) return null
 
   const tz = timeZoneForText(text)
@@ -1663,11 +1673,16 @@ function registerIpc(): void {
   // ---- writing style ----
   ipcMain.handle('writing:addSample', (_e, content: unknown) => {
     if (typeof content !== 'string' || !content.trim()) return null
-    return db.addWritingSample(content.trim())
+    const sample = db.addWritingSample(content.trim())
+    db.clearWritingProfile()
+    return sample
   })
   ipcMain.handle('writing:listSamples', () => db.listWritingSamples())
   ipcMain.handle('writing:deleteSample', (_e, id: unknown) => {
-    if (typeof id === 'number') db.deleteWritingSample(id)
+    if (typeof id === 'number') {
+      db.deleteWritingSample(id)
+      db.clearWritingProfile()
+    }
     return true
   })
   ipcMain.handle('writing:getProfile', () => db.getWritingProfile())

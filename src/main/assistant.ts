@@ -368,7 +368,10 @@ function cleanStyledEmailBody(text: string): string {
     .trim()
     .replace(/^```(?:text|markdown)?/i, '')
     .replace(/```$/i, '')
-    .replace(/^(?:revised\s+)?(?:email\s+)?draft\s*:?\s*/i, '')
+    .replace(
+      /^(?:here\s+is\s+)?(?:the\s+)?(?:revised\s+)?(?:email\s+)?(?:body|draft)\s*:?\s*/i,
+      ''
+    )
     .trim()
 }
 
