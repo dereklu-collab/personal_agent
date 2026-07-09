@@ -508,6 +508,75 @@ function weatherDescription(code: number): string {
   return 'mixed'
 }
 
+function nwsHeaders(): Record<string, string> {
+  return {
+    accept: 'application/geo+json',
+    'user-agent': 'AI Assistant desktop app (personal use)'
+  }
+}
+
+async function tryNwsWeather(
+  latitude: number,
+  longitude: number,
+  place: string,
+  userMessage: Message
+): Promise<AssistantResult | null> {
+  const pointRes = await fetch(
+    `https://api.weather.gov/points/${latitude.toFixed(4)},${longitude.toFixed(4)}`,
+    { headers: nwsHeaders() }
+  )
+  if (!pointRes.ok) throw new Error(`NWS points API ${pointRes.status}`)
+  const pointData = (await pointRes.json()) as {
+    properties?: {
+      forecastHourly?: string
+    }
+  }
+  const hourlyUrl = pointData.properties?.forecastHourly
+  if (!hourlyUrl) throw new Error('NWS hourly forecast URL missing')
+
+  const hourlyRes = await fetch(hourlyUrl, { headers: nwsHeaders() })
+  if (!hourlyRes.ok) throw new Error(`NWS hourly forecast ${hourlyRes.status}`)
+  const hourlyData = (await hourlyRes.json()) as {
+    properties?: {
+      periods?: {
+        temperature?: number
+        temperatureUnit?: string
+        shortForecast?: string
+        windSpeed?: string
+        windDirection?: string
+        relativeHumidity?: { value?: number | null }
+        probabilityOfPrecipitation?: { value?: number | null }
+      }[]
+    }
+  }
+  const current = hourlyData.properties?.periods?.[0]
+  if (!current || typeof current.temperature !== 'number') {
+    throw new Error('NWS hourly forecast data missing')
+  }
+
+  const condition = current.shortForecast ? `${current.shortForecast.toLowerCase()} and ` : ''
+  const unit = current.temperatureUnit ?? 'F'
+  const humidity =
+    typeof current.relativeHumidity?.value === 'number'
+      ? ` Humidity is ${Math.round(current.relativeHumidity.value)}%.`
+      : ''
+  const precip =
+    typeof current.probabilityOfPrecipitation?.value === 'number'
+      ? ` Chance of precipitation is ${Math.round(current.probabilityOfPrecipitation.value)}%.`
+      : ''
+  const wind =
+    current.windSpeed || current.windDirection
+      ? ` Wind is ${[current.windDirection, current.windSpeed].filter(Boolean).join(' ')}.`
+      : ''
+
+  return addBasicAssistantMessage(
+    userMessage,
+    `The weather in ${place} is ${condition}${Math.round(
+      current.temperature
+    )}°${unit}.${humidity}${wind}${precip}\n\nSource: National Weather Service.`
+  )
+}
+
 async function tryWeatherNow(
   text: string,
   userMessage: Message
@@ -538,6 +607,7 @@ async function tryWeatherNow(
         name: string
         admin1?: string
         country?: string
+        country_code?: string
         latitude: number
         longitude: number
       }[]
@@ -548,6 +618,21 @@ async function tryWeatherNow(
         userMessage,
         `I couldn't find a weather location for "${location}".`
       )
+    }
+
+    const place = [match.name, match.admin1, match.country].filter(Boolean).join(', ')
+    if (match.country_code === 'US' || match.country === 'United States') {
+      try {
+        const nwsResult = await tryNwsWeather(
+          match.latitude,
+          match.longitude,
+          place,
+          userMessage
+        )
+        if (nwsResult) return nwsResult
+      } catch (err) {
+        db.addLog('system', `NWS weather lookup failed: ${(err as Error).message}`)
+      }
     }
 
     const weatherUrl =
@@ -579,7 +664,6 @@ async function tryWeatherNow(
       throw new Error('Missing current weather data')
     }
 
-    const place = [match.name, match.admin1, match.country].filter(Boolean).join(', ')
     const description =
       typeof current.weather_code === 'number' ? weatherDescription(current.weather_code) : 'current'
     const feels =
