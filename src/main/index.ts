@@ -736,6 +736,7 @@ function cleanTaskTitle(text: string): string {
   let title = text
     .replace(/^\s*(hi|hey|hello)[,!]?\s+/i, '')
     .replace(/^(can you|could you|please|for me)\s+/i, '')
+    .replace(/[.!?]\s*(this|it)\s+(should|needs?|has to|must)\s+have\s+(a\s+)?(due\s+date|deadline)\b[\s\S]*$/i, '')
     .replace(/\bin\s+\d+\s*(minute|minutes|min|hour|hours|hr|hrs|day|days)\b/gi, '')
     .replace(/\b(?:on\s+)?\d{1,2}\/\d{1,2}\/\d{2,4}(?:\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/gi, '')
     .replace(/\btomorrow(?:\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/gi, '')
@@ -743,9 +744,10 @@ function cleanTaskTitle(text: string): string {
     .replace(/\breminder\s+and\s+(task|todo|to-do)\s+(to|for|about)\b/gi, '$2')
     .replace(/\b(task|todo|to-do)\s+and\s+reminder\b/gi, ' ')
     .replace(/\breminder\s+and\s+(task|todo|to-do)\b/gi, ' ')
-    .replace(/^(please\s+)?(create|add|make)\s+(a\s+)?(new\s+)?(task|todo|to-do)\s*/i, '')
-    .replace(/^(please\s+)?(create|add|make)\s+(a\s+)?(new\s+)?(task|todo|to-do)\s+(to|for|called|named)\s*/i, '')
+    .replace(/^(please\s+)?(set|create|add|make)\s+(a\s+)?(new\s+)?(task|todo|to-do)\s*/i, '')
+    .replace(/^(please\s+)?(set|create|add|make)\s+(a\s+)?(new\s+)?(task|todo|to-do)\s+(to|for|called|named)\s*/i, '')
     .replace(/^(please\s+)?schedule\s+(a\s+)?/i, '')
+    .replace(/\b(due\s+date|deadline)\s+(is|for|on|at|of)?\b/gi, ' ')
     .replace(/\b(and|as well)\b/gi, ' ')
     .replace(/\s+(as|like)\s+(a\s+)?(task|todo|to-do)\b/gi, '')
     .replace(/\s+(for me|for myself)\b/gi, '')
@@ -766,7 +768,7 @@ function isTaskRequest(text: string): boolean {
   const lower = text.toLowerCase()
   if (/\b(open|launch|start)\b/.test(lower) && resolveApp(text)) return false
   return (
-    /\b(create|add|make)\s+(a\s+)?(new\s+)?(task|todo|to-do)\b/.test(lower) ||
+    /\b(set|create|add|make)\s+(a\s+)?(new\s+)?(task|todo|to-do)\b/.test(lower) ||
     /\bschedule\b/.test(lower)
   )
 }
@@ -949,6 +951,9 @@ function tryDeleteTaskNow(text: string, userMessage: Message): AssistantResult |
 }
 
 function isScheduleUpdateRequest(text: string): boolean {
+  if (isTaskRequest(text) || isTaskAndReminderRequest(text) || isReminderRequest(text)) {
+    return false
+  }
   return /\b(wait|actually|change|update|move|reschedule|set|edit)\b/i.test(text) &&
     /\b(to|at|for|tomorrow|in\s+\d+|\d{1,2}(?::\d{2})?\s*(am|pm))\b/i.test(text)
 }
