@@ -296,7 +296,7 @@ function tryHelpCommand(text: string, userMessage: Message): AssistantResult | n
       '',
       '- Summarize: `summarize: paste text here` or `summarize this article: https://...`',
       '- Live info: `weather in NYC`, `current market movers`, `top stock gainers`',
-      '- Time: `what time is it in London?` or `convert 5pm PST to EST`',
+      '- Time: `what time is it in London?`, `convert 5pm PST to EST`, or `when is 5-7pm PST to EST`',
       '- Tasks: `create a task to call Derek tomorrow at 2pm`',
       '- Reminders: `remind me in 1 hour to leave work`',
       '- Edit/delete: `move that reminder to 10pm`, `delete the meeting task`, `remove all tasks and reminders`',
@@ -372,9 +372,59 @@ function formatConvertedClock(totalMinutes: number): { time: string; dayNote: st
   return { time: `${hour12}${minuteText} ${meridiem}`, dayNote }
 }
 
+function parseClockMinutes(
+  hourText: string,
+  minuteText: string | undefined,
+  meridiemText: string
+): number | null {
+  let hour = Number(hourText)
+  const minute = minuteText ? Number(minuteText) : 0
+  const meridiem = meridiemText.toLowerCase()
+  if (hour < 1 || hour > 12 || minute < 0 || minute > 59) return null
+  if (meridiem === 'pm' && hour < 12) hour += 12
+  if (meridiem === 'am' && hour === 12) hour = 0
+  return hour * 60 + minute
+}
+
+function formatConvertedRange(startMinutes: number, endMinutes: number): {
+  time: string
+  dayNote: string
+} {
+  const start = formatConvertedClock(startMinutes)
+  const end = formatConvertedClock(endMinutes)
+  const dayNote =
+    start.dayNote && start.dayNote === end.dayNote
+      ? start.dayNote
+      : start.dayNote || end.dayNote
+  return { time: `${start.time}-${end.time}`, dayNote }
+}
+
 function tryConvertTimeZone(text: string, userMessage: Message): AssistantResult | null {
+  const rangeMatch = text.match(
+    /\b(?:convert|what(?:'s| is)|when(?:'s| is)|change)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:-|to|through|until)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s+([a-z]{2,4})\s+(?:to|in|into)\s+([a-z]{2,4})\b/i
+  )
+  if (rangeMatch) {
+    const source = parseFixedTimeZone(rangeMatch[7])
+    const target = parseFixedTimeZone(rangeMatch[8])
+    if (!source || !target) return null
+
+    const firstMeridiem = rangeMatch[3] ?? rangeMatch[6]
+    const sourceStart = parseClockMinutes(rangeMatch[1], rangeMatch[2], firstMeridiem)
+    const sourceEnd = parseClockMinutes(rangeMatch[4], rangeMatch[5], rangeMatch[6])
+    if (sourceStart === null || sourceEnd === null) return null
+
+    const offset = target.offsetMinutes - source.offsetMinutes
+    const converted = formatConvertedRange(sourceStart + offset, sourceEnd + offset)
+    const sourceRange = formatConvertedRange(sourceStart, sourceEnd)
+
+    return addBasicAssistantMessage(
+      userMessage,
+      `${sourceRange.time} ${source.label} is ${converted.time} ${target.label}${converted.dayNote}.`
+    )
+  }
+
   const match = text.match(
-    /\b(?:convert|what(?:'s| is)|change)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s+([a-z]{2,4})\s+(?:to|in|into)\s+([a-z]{2,4})\b/i
+    /\b(?:convert|what(?:'s| is)|when(?:'s| is)|change)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s+([a-z]{2,4})\s+(?:to|in|into)\s+([a-z]{2,4})\b/i
   )
   if (!match) return null
 
@@ -382,14 +432,8 @@ function tryConvertTimeZone(text: string, userMessage: Message): AssistantResult
   const target = parseFixedTimeZone(match[5])
   if (!source || !target) return null
 
-  let hour = Number(match[1])
-  const minute = match[2] ? Number(match[2]) : 0
-  const meridiem = match[3].toLowerCase()
-  if (hour < 1 || hour > 12 || minute < 0 || minute > 59) return null
-  if (meridiem === 'pm' && hour < 12) hour += 12
-  if (meridiem === 'am' && hour === 12) hour = 0
-
-  const sourceMinutes = hour * 60 + minute
+  const sourceMinutes = parseClockMinutes(match[1], match[2], match[3])
+  if (sourceMinutes === null) return null
   const targetMinutes = sourceMinutes - source.offsetMinutes + target.offsetMinutes
   const converted = formatConvertedClock(targetMinutes)
 
