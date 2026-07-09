@@ -2,6 +2,7 @@ import { useRef } from 'react'
 import type { PointerEvent, ReactNode } from 'react'
 
 export type Status = 'idle' | 'thinking' | 'listening' | 'due'
+type ResizeEdge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 
 interface Props {
   expanded: boolean
@@ -21,34 +22,54 @@ export function FloatingWidget({
   children
 }: Props) {
   const resizeState = useRef<{
+    edge: ResizeEdge
     startX: number
     startY: number
-    startWidth: number
-    startHeight: number
+    bounds: { x: number; y: number; width: number; height: number }
   } | null>(null)
 
-  async function startResize(event: PointerEvent<HTMLButtonElement>): Promise<void> {
+  async function startResize(
+    edge: ResizeEdge,
+    event: PointerEvent<HTMLDivElement>
+  ): Promise<void> {
     event.preventDefault()
     event.stopPropagation()
     event.currentTarget.setPointerCapture(event.pointerId)
-    const size = await window.api.getExpandedSize()
+    const bounds = await window.api.getExpandedBounds()
     resizeState.current = {
+      edge,
       startX: event.screenX,
       startY: event.screenY,
-      startWidth: size.width,
-      startHeight: size.height
+      bounds
     }
   }
 
-  function updateResize(event: PointerEvent<HTMLButtonElement>): void {
+  function updateResize(event: PointerEvent<HTMLDivElement>): void {
     const state = resizeState.current
     if (!state) return
-    const width = state.startWidth + (state.startX - event.screenX)
-    const height = state.startHeight + (state.startY - event.screenY)
-    void window.api.resizeExpanded({ width, height })
+    const dx = event.screenX - state.startX
+    const dy = event.screenY - state.startY
+    const next = { ...state.bounds }
+
+    if (state.edge.includes('w')) {
+      next.x = state.bounds.x + dx
+      next.width = state.bounds.width - dx
+    }
+    if (state.edge.includes('e')) {
+      next.width = state.bounds.width + dx
+    }
+    if (state.edge.includes('n')) {
+      next.y = state.bounds.y + dy
+      next.height = state.bounds.height - dy
+    }
+    if (state.edge.includes('s')) {
+      next.height = state.bounds.height + dy
+    }
+
+    void window.api.resizeExpandedBounds(next)
   }
 
-  function stopResize(event: PointerEvent<HTMLButtonElement>): void {
+  function stopResize(event: PointerEvent<HTMLDivElement>): void {
     if (!resizeState.current) return
     resizeState.current = null
     event.currentTarget.releasePointerCapture(event.pointerId)
@@ -86,15 +107,17 @@ export function FloatingWidget({
         </button>
       </div>
       {children}
-      <button
-        className="resize-grip"
-        title="Resize assistant"
-        aria-label="Resize assistant"
-        onPointerDown={(event) => void startResize(event)}
-        onPointerMove={updateResize}
-        onPointerUp={stopResize}
-        onPointerCancel={stopResize}
-      />
+      {(['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'] as ResizeEdge[]).map((edge) => (
+        <div
+          key={edge}
+          className={`resize-zone resize-${edge}`}
+          aria-hidden="true"
+          onPointerDown={(event) => void startResize(edge, event)}
+          onPointerMove={updateResize}
+          onPointerUp={stopResize}
+          onPointerCancel={stopResize}
+        />
+      ))}
     </div>
   )
 }

@@ -73,14 +73,28 @@ function applyBounds(): void {
   win.setBounds({ x, y, width: size.width, height: size.height }, false)
 }
 
-function resizeExpandedWindow(size: { width: number; height: number }): {
+function resizeExpandedBounds(bounds: {
+  x: number
+  y: number
   width: number
   height: number
-} | null {
+}): { x: number; y: number; width: number; height: number } | null {
   if (!win || !expanded) return null
-  const next = clampSize(size)
-  const { x, y } = positionFor(next)
-  win.setBounds({ x, y, width: next.width, height: next.height }, false)
+
+  const { workArea } = screen.getPrimaryDisplay()
+  const size = clampSize(bounds)
+  const minX = workArea.x + MARGIN
+  const minY = workArea.y + MARGIN
+  const maxX = workArea.x + workArea.width - size.width - MARGIN
+  const maxY = workArea.y + workArea.height - size.height - MARGIN
+  const next = {
+    x: Math.min(Math.max(bounds.x, minX), maxX),
+    y: Math.min(Math.max(bounds.y, minY), maxY),
+    width: size.width,
+    height: size.height
+  }
+
+  win.setBounds(next, false)
   db.setExpandedWindowSize(next.width, next.height)
   return next
 }
@@ -1719,19 +1733,33 @@ function registerIpc(): void {
     applyBounds()
     return expanded
   })
-  ipcMain.handle('window:getExpandedSize', () => {
-    if (win && expanded) {
-      const [width, height] = win.getSize()
-      return { width, height }
-    }
-    return expandedWindowSize()
+  ipcMain.handle('window:getExpandedBounds', () => {
+    if (win && expanded) return win.getBounds()
+    const size = expandedWindowSize()
+    const position = positionFor(size)
+    return { ...position, ...size }
   })
-  ipcMain.handle('window:resizeExpanded', (_e, size: unknown) => {
-    const value = size as { width?: unknown; height?: unknown }
-    if (typeof value?.width !== 'number' || typeof value?.height !== 'number') {
+  ipcMain.handle('window:resizeExpandedBounds', (_e, bounds: unknown) => {
+    const value = bounds as {
+      x?: unknown
+      y?: unknown
+      width?: unknown
+      height?: unknown
+    }
+    if (
+      typeof value?.x !== 'number' ||
+      typeof value?.y !== 'number' ||
+      typeof value?.width !== 'number' ||
+      typeof value?.height !== 'number'
+    ) {
       return null
     }
-    return resizeExpandedWindow({ width: value.width, height: value.height })
+    return resizeExpandedBounds({
+      x: value.x,
+      y: value.y,
+      width: value.width,
+      height: value.height
+    })
   })
 
   ipcMain.handle('settings:get', () => toPublicSettings())

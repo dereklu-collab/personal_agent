@@ -17,13 +17,19 @@ const api = {
   // window
   setExpanded: (v: boolean): Promise<boolean> =>
     ipcRenderer.invoke('window:setExpanded', v),
-  getExpandedSize: (): Promise<{ width: number; height: number }> =>
-    ipcRenderer.invoke('window:getExpandedSize'),
-  resizeExpanded: (size: {
+  getExpandedBounds: (): Promise<{
+    x: number
+    y: number
     width: number
     height: number
-  }): Promise<{ width: number; height: number } | null> =>
-    ipcRenderer.invoke('window:resizeExpanded', size),
+  }> => ipcRenderer.invoke('window:getExpandedBounds'),
+  resizeExpandedBounds: (bounds: {
+    x: number
+    y: number
+    width: number
+    height: number
+  }): Promise<{ x: number; y: number; width: number; height: number } | null> =>
+    ipcRenderer.invoke('window:resizeExpandedBounds', bounds),
 
   // settings
   getSettings: (): Promise<PublicSettings> => ipcRenderer.invoke('settings:get'),
