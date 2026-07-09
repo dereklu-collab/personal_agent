@@ -957,8 +957,50 @@ function parseTimeOnlyUpdate(text: string, baseIso: string): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toISOString()
 }
 
+function cleanIntentTitleFragment(value: string): string {
+  return value
+    .replace(/[.!?]\s*(the|this|it)\s+[\s\S]*$/i, '')
+    .replace(/[.!?]\s*(this|it)\s+(should|needs?|has to|must)\s+have\s+(a\s+)?(due\s+date|deadline)\b[\s\S]*$/i, '')
+    .replace(/\bin\s+\d+\s*(second|seconds|sec|secs|minute|minutes|min|hour|hours|hr|hrs|day|days)\b/gi, '')
+    .replace(/\b(?:on\s+)?\d{1,2}\/\d{1,2}\/\d{2,4}(?:\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/gi, '')
+    .replace(/\btomorrow(?:\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/gi, '')
+    .replace(/\b(due\s+date|deadline)\s+(is|for|on|at|of)?\b/gi, ' ')
+    .replace(/\s+(as|like)\s+(a\s+)?(task|todo|to-do|reminder)\b/gi, '')
+    .replace(/\s+(for me|for myself)\b/gi, '')
+    .replace(/\b(as well|also|too)\b/gi, ' ')
+    .replace(/^(a|an|the)\s+/i, '')
+    .replace(/[?.!,]\s*$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function titleAfterIntentKeyword(text: string, kind: 'task' | 'reminder' | 'either'): string | null {
+  const target =
+    kind === 'task'
+      ? '(?:task|todo|to-do)'
+      : kind === 'reminder'
+        ? 'reminder'
+        : '(?:task|todo|to-do|reminder)(?:\\s+and\\s+(?:task|todo|to-do|reminder))?'
+  const patterns = [
+    new RegExp(`\\b${target}\\s+(?:for\\s+me\\s+)?(?:to|for|about|called|named)\\s+([\\s\\S]+)$`, 'i'),
+    new RegExp(`\\b(?:set|create|add|make)\\s+(?:a\\s+)?(?:new\\s+)?${target}\\s+(?:for\\s+me\\s+)?(?:to|for|about|called|named)\\s+([\\s\\S]+)$`, 'i')
+  ]
+
+  if (kind === 'reminder' || kind === 'either') {
+    patterns.unshift(/\bremind\s+me\s+(?:to|for|about)\s+([\s\S]+)$/i)
+  }
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern)
+    const title = match?.[1] ? cleanIntentTitleFragment(match[1]) : ''
+    if (title) return title
+  }
+
+  return null
+}
+
 function cleanTaskTitle(text: string): string {
-  let title = text
+  let title = titleAfterIntentKeyword(text, 'task') ?? titleAfterIntentKeyword(text, 'either') ?? text
     .replace(/^\s*(hi|hey|hello)[,!]?\s+/i, '')
     .replace(/^(can you|could you|please|for me)\s+/i, '')
     .replace(/[.!?]\s*(this|it)\s+(should|needs?|has to|must)\s+have\s+(a\s+)?(due\s+date|deadline)\b[\s\S]*$/i, '')
@@ -1359,7 +1401,7 @@ function tryUpdateLastScheduleNow(text: string, userMessage: Message): Assistant
 }
 
 function cleanReminderTitle(text: string): string {
-  return text
+  return (titleAfterIntentKeyword(text, 'reminder') ?? titleAfterIntentKeyword(text, 'either') ?? text)
     .replace(/^\s*(hi|hey|hello)[,!]?\s+/i, '')
     .replace(/^\s*(can you|could you|please)\s+/i, '')
     .replace(/[.!?]\s*(the|this|it)\s+[\s\S]*$/i, '')
