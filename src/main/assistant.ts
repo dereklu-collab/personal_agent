@@ -83,7 +83,12 @@ function historyForRequest(userText: string): ChatTurn[] {
   if (isEmailDraftRequest(userText) && !referencesPriorContext(userText)) {
     return []
   }
-  return recentHistory()
+  const history = recentHistory()
+  const last = history.at(-1)
+  if (last?.role === 'user' && last.content.trim() === userText.trim()) {
+    return history.slice(0, -1)
+  }
+  return history
 }
 
 function stripFences(text: string): string {
@@ -320,15 +325,16 @@ async function callConfiguredModel(
 async function callConfiguredPlainModel(
   settings: RawSettings,
   system: string,
-  userText: string
+  userText: string,
+  history: ChatTurn[] = []
 ): Promise<string> {
   if (settings.provider === 'openai') {
-    return callOpenAIPlain(settings.apiKey, settings.model, system, userText)
+    return callOpenAIPlain(settings.apiKey, settings.model, system, userText, history)
   }
   if (settings.provider === 'ollama') {
-    return callOllamaPlain(settings.model, system, userText)
+    return callOllamaPlain(settings.model, system, userText, history)
   }
-  return callAnthropic(settings.apiKey, settings.model, system, [], userText)
+  return callAnthropic(settings.apiKey, settings.model, system, history, userText)
 }
 
 function parseAssistantResponse(raw: string): AssistantResponse {
@@ -446,6 +452,21 @@ export async function runAssistant(userText: string): Promise<AssistantResponse>
   }
 }
 
+/** Answer normal chat/follow-up questions without creating side effects. */
+export async function runGeneralChat(userText: string): Promise<string> {
+  const s = getRawSettings()
+  if (s.provider !== 'ollama' && !s.apiKey) {
+    throw new AssistantError('No API key set. Open Settings and add your key.')
+  }
+  const system =
+    'You are AI Assistant, a concise desktop assistant. Answer normal questions and follow-up questions using the recent chat context. ' +
+    'Do not create tasks, reminders, scheduled actions, emails, calls, or app/browser actions in this fallback mode. ' +
+    'If the user asks whether a previous live lookup is accurate as of today, explain that it was retrieved from the live lookup at the time it was shown, but market/weather/web data can change and they can ask again to refresh it. ' +
+    'If the user asks what commands are supported, tell them to type /help. Keep the answer brief and useful.'
+  const raw = await callConfiguredPlainModel(s, system, userText, historyForRequest(userText))
+  return raw.trim()
+}
+
 /** Ask the model to summarize the user's writing samples into a style profile. */
 export async function summarizeWritingProfile(samples: string[]): Promise<string> {
   const s = getRawSettings()
@@ -489,7 +510,8 @@ async function callOpenAIPlain(
   apiKey: string,
   model: string,
   system: string,
-  userText: string
+  userText: string,
+  history: ChatTurn[] = []
 ): Promise<string> {
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -501,6 +523,7 @@ async function callOpenAIPlain(
       model,
       messages: [
         { role: 'system', content: system },
+        ...history,
         { role: 'user', content: userText }
       ]
     })
@@ -513,7 +536,8 @@ async function callOpenAIPlain(
 async function callOllamaPlain(
   model: string,
   system: string,
-  userText: string
+  userText: string,
+  history: ChatTurn[] = []
 ): Promise<string> {
   let res: Response
   try {
@@ -525,6 +549,7 @@ async function callOllamaPlain(
         stream: false,
         messages: [
           { role: 'system', content: system },
+          ...history,
           { role: 'user', content: userText }
         ]
       })

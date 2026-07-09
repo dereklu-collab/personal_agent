@@ -13,6 +13,7 @@ import {
 } from './browserControl'
 import {
   runAssistant,
+  runGeneralChat,
   summarizeText,
   summarizeWritingProfile,
   transcribeAudio,
@@ -143,8 +144,13 @@ function parseRelativeDate(text: string): string | null {
 function assistantFailureMessage(): string {
   return (
     'This request cannot be fulfilled. AI Assistant cannot complete this action yet. ' +
-    'Please try rephrasing the request or use a supported command.'
+    'Please try rephrasing the request or use a supported command. Try /help to see examples.'
   )
+}
+
+function withHelpHint(message: string): string {
+  if (message.includes('/help')) return message
+  return `${message} Try /help to see examples.`
 }
 
 function addBasicAssistantMessage(
@@ -157,6 +163,34 @@ function addBasicAssistantMessage(
     assistantMessage,
     intent: 'general_chat'
   }
+}
+
+function tryHelpCommand(text: string, userMessage: Message): AssistantResult | null {
+  const normalized = text.trim().toLowerCase()
+  const isHelp =
+    normalized === '/help' ||
+    normalized === 'help' ||
+    normalized === 'commands' ||
+    /\b(what can you do|show commands|supported commands|how do i use)\b/.test(normalized)
+  if (!isHelp) return null
+
+  return addBasicAssistantMessage(
+    userMessage,
+    [
+      'Here are useful things you can ask me to do:',
+      '',
+      '- Summarize: `summarize: paste text here` or `summarize this article: https://...`',
+      '- Live info: `weather in NYC`, `current market movers`, `top stock gainers`',
+      '- Time: `what time is it in London?`',
+      '- Tasks: `create a task to call Derek tomorrow at 2pm`',
+      '- Reminders: `remind me in 1 hour to leave work`',
+      '- Edit/delete: `move that reminder to 10pm`, `delete the meeting task`, `remove all tasks and reminders`',
+      '- Apps/sites: `open Slack`, `open Gmail in Chrome`, `close Gmail in Chrome`, `open Chrome in 10 minutes`',
+      '- Writing: `write an email to Rose about the referral inquiry`',
+      '',
+      'Voice input works with the same natural phrases.'
+    ].join('\n')
+  )
 }
 
 function tryTellTimeNow(text: string, userMessage: Message): AssistantResult | null {
@@ -623,7 +657,9 @@ function tryStartCallNow(text: string, userMessage: Message): AssistantResult | 
   )
   const message = result.ok
     ? `Opening FaceTime for ${target}. macOS may ask you to choose or confirm the call.`
-    : `This request cannot be fulfilled. AI Assistant could not start a call for ${target}. ${result.reason}`
+    : withHelpHint(
+        `This request cannot be fulfilled. AI Assistant could not start a call for ${target}. ${result.reason}`
+      )
   if (!result.ok) db.addLog('system', `Call request failed: ${target}: ${result.reason}`)
   const assistantMessage = db.addMessage('assistant', message, 'schedule_app_open')
   return {
@@ -1389,9 +1425,10 @@ function tryOpenAppNow(text: string, userMessage: Message): AssistantResult | nu
 
   const label = resolveApp(text)
   if (!label) {
-    const message =
+    const message = withHelpHint(
       'This request cannot be fulfilled. AI Assistant can currently open only these apps: ' +
-      `${allowlistLabels().join(', ')}.`
+        `${allowlistLabels().join(', ')}.`
+    )
     const assistantMessage = db.addMessage('assistant', message, 'schedule_app_open')
     return {
       userMessage,
@@ -1403,7 +1440,9 @@ function tryOpenAppNow(text: string, userMessage: Message): AssistantResult | nu
   const result = openApp(label)
   const message = result.ok
     ? `Opening ${result.label} now.`
-    : `This request cannot be fulfilled. AI Assistant could not open ${label}. ${result.reason}`
+    : withHelpHint(
+        `This request cannot be fulfilled. AI Assistant could not open ${label}. ${result.reason}`
+      )
   const assistantMessage = db.addMessage('assistant', message, 'schedule_app_open')
   if (!result.ok) db.addLog('system', `Immediate app open failed: ${label}: ${result.reason}`)
   return {
@@ -1419,9 +1458,10 @@ function tryCloseAppNow(text: string, userMessage: Message): AssistantResult | n
 
   const label = resolveApp(text)
   if (!label) {
-    const message =
+    const message = withHelpHint(
       'This request cannot be fulfilled. AI Assistant can currently close only these apps: ' +
-      `${allowlistLabels().join(', ')}.`
+        `${allowlistLabels().join(', ')}.`
+    )
     const assistantMessage = db.addMessage('assistant', message, 'schedule_app_open')
     return {
       userMessage,
@@ -1433,7 +1473,9 @@ function tryCloseAppNow(text: string, userMessage: Message): AssistantResult | n
   const result = closeApp(label)
   const message = result.ok
     ? `Closing ${result.label}.`
-    : `This request cannot be fulfilled. AI Assistant could not close ${label}. ${result.reason}`
+    : withHelpHint(
+        `This request cannot be fulfilled. AI Assistant could not close ${label}. ${result.reason}`
+      )
   const assistantMessage = db.addMessage('assistant', message, 'schedule_app_open')
   if (!result.ok) db.addLog('system', `Immediate app close failed: ${label}: ${result.reason}`)
   return {
@@ -1449,7 +1491,7 @@ function tryBrowserSiteOpen(text: string, userMessage: Message): AssistantResult
   const result = openKnownSite(text)
   const message = result.ok
     ? `Opening ${result.site} in ${result.browser}.`
-    : `This request cannot be fulfilled. ${result.reason}`
+    : withHelpHint(`This request cannot be fulfilled. ${result.reason}`)
   const assistantMessage = db.addMessage('assistant', message, 'schedule_app_open')
   if (!result.ok) db.addLog('system', `Browser action failed: ${result.reason}`)
   return {
@@ -1465,7 +1507,7 @@ function tryBrowserSiteClose(text: string, userMessage: Message): AssistantResul
   const result = closeKnownSite(text)
   const message = result.ok
     ? `Closed ${result.site} in ${result.browser}.`
-    : `This request cannot be fulfilled. ${result.reason}`
+    : withHelpHint(`This request cannot be fulfilled. ${result.reason}`)
   const assistantMessage = db.addMessage('assistant', message, 'schedule_app_open')
   if (!result.ok) db.addLog('system', `Browser close action failed: ${result.reason}`)
   return {
@@ -1514,9 +1556,10 @@ function tryScheduleAppOpen(text: string, userMessage: Message): AssistantResult
 
   const label = resolveApp(text)
   if (!label) {
-    const message =
+    const message = withHelpHint(
       'This request cannot be fulfilled. AI Assistant can currently schedule only these apps: ' +
-      `${allowlistLabels().join(', ')}.`
+        `${allowlistLabels().join(', ')}.`
+    )
     const assistantMessage = db.addMessage('assistant', message, 'schedule_app_open')
     return { userMessage, assistantMessage, intent: 'schedule_app_open' }
   }
@@ -1645,6 +1688,12 @@ function registerIpc(): void {
     const userMessage = db.addMessage('user', text.trim(), null)
     emit({ type: 'data-changed' })
 
+    const helpResult = tryHelpCommand(text.trim(), userMessage)
+    if (helpResult) {
+      emit({ type: 'data-changed' })
+      return helpResult
+    }
+
     const timeResult = tryTellTimeNow(text.trim(), userMessage)
     if (timeResult) {
       emit({ type: 'data-changed' })
@@ -1771,6 +1820,22 @@ function registerIpc(): void {
     } catch (err) {
       const detail = err instanceof Error ? err.message : 'Unknown assistant error'
       db.addLog('system', `Assistant request failed: ${detail}`)
+      try {
+        const fallback = await runGeneralChat(text.trim())
+        if (fallback) {
+          const assistantMessage = db.addMessage('assistant', fallback, 'general_chat')
+          emit({ type: 'data-changed' })
+          return {
+            userMessage,
+            assistantMessage,
+            intent: 'general_chat'
+          }
+        }
+      } catch (fallbackErr) {
+        const fallbackDetail =
+          fallbackErr instanceof Error ? fallbackErr.message : 'Unknown fallback error'
+        db.addLog('system', `General chat fallback failed: ${fallbackDetail}`)
+      }
       const message = assistantFailureMessage()
       const assistantMessage = db.addMessage('assistant', message, 'general_chat')
       emit({ type: 'data-changed' })
