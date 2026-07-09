@@ -346,6 +346,158 @@ async function tryWeatherNow(
   }
 }
 
+type YahooScreenerId = 'day_gainers' | 'day_losers' | 'most_actives'
+
+interface MarketMover {
+  symbol: string
+  name: string
+  price: number | null
+  change: number | null
+  changePercent: number | null
+}
+
+function isMarketMoversRequest(text: string): boolean {
+  const lower = text.toLowerCase()
+  const hasMarketTerm = /\b(stock|stocks|market|markets|equity|equities|ticker|tickers)\b/.test(
+    lower
+  )
+  const hasMoverTerm =
+    /\b(mover|movers|moving|moved|gainer|gainers|loser|losers|decliner|decliners|active|actives)\b/.test(
+      lower
+    )
+  const hasRankingTerm = /\b(biggest|top|most|largest|major|best|worst)\b/.test(lower)
+  return (
+    (hasMarketTerm && (hasMoverTerm || (hasRankingTerm && /\b(up|down)\b/.test(lower)))) ||
+    (hasMoverTerm && hasRankingTerm)
+  )
+}
+
+function wantsOnlyGainers(text: string): boolean {
+  const lower = text.toLowerCase()
+  return /\b(gainer|gainers|up|winner|winners|best)\b/.test(lower) && !wantsOnlyLosers(text)
+}
+
+function wantsOnlyLosers(text: string): boolean {
+  const lower = text.toLowerCase()
+  return /\b(loser|losers|down|decliner|decliners|worst)\b/.test(lower)
+}
+
+function readNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+async function fetchMarketMovers(screenerId: YahooScreenerId): Promise<MarketMover[]> {
+  const url =
+    'https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?' +
+    new URLSearchParams({
+      scrIds: screenerId,
+      count: '5'
+    }).toString()
+
+  const res = await fetch(url, {
+    headers: {
+      'user-agent': 'AI Assistant desktop app'
+    }
+  })
+  if (!res.ok) throw new Error(`Market screener ${screenerId} failed with ${res.status}`)
+
+  const data = (await res.json()) as {
+    finance?: {
+      result?: {
+        quotes?: {
+          symbol?: unknown
+          shortName?: unknown
+          longName?: unknown
+          displayName?: unknown
+          regularMarketPrice?: unknown
+          regularMarketChange?: unknown
+          regularMarketChangePercent?: unknown
+        }[]
+      }[]
+    }
+  }
+
+  const quotes = data.finance?.result?.[0]?.quotes ?? []
+  return quotes
+    .map((quote) => {
+      const symbol = typeof quote.symbol === 'string' ? quote.symbol.trim() : ''
+      const fallbackName =
+        typeof quote.shortName === 'string'
+          ? quote.shortName
+          : typeof quote.longName === 'string'
+            ? quote.longName
+            : typeof quote.displayName === 'string'
+              ? quote.displayName
+              : symbol
+      return {
+        symbol,
+        name: fallbackName.trim(),
+        price: readNumber(quote.regularMarketPrice),
+        change: readNumber(quote.regularMarketChange),
+        changePercent: readNumber(quote.regularMarketChangePercent)
+      }
+    })
+    .filter((mover) => mover.symbol)
+}
+
+function formatMarketMover(mover: MarketMover): string {
+  const name = mover.name && mover.name !== mover.symbol ? ` (${mover.name})` : ''
+  const price = mover.price === null ? '' : ` at $${mover.price.toFixed(2)}`
+  const change =
+    mover.change === null
+      ? ''
+      : `, ${mover.change >= 0 ? '+' : ''}${mover.change.toFixed(2)}`
+  const changePercent =
+    mover.changePercent === null
+      ? ''
+      : ` (${mover.changePercent >= 0 ? '+' : ''}${mover.changePercent.toFixed(2)}%)`
+  return `- ${mover.symbol}${name}${price}${change}${changePercent}`
+}
+
+async function tryMarketMoversNow(
+  text: string,
+  userMessage: Message
+): Promise<AssistantResult | null> {
+  if (!isMarketMoversRequest(text)) return null
+
+  const gainersOnly = wantsOnlyGainers(text)
+  const losersOnly = wantsOnlyLosers(text)
+  const sections: string[] = []
+
+  try {
+    if (!losersOnly || gainersOnly) {
+      const gainers = await fetchMarketMovers('day_gainers')
+      sections.push(
+        `Top stock gainers so far:\n${
+          gainers.length ? gainers.map(formatMarketMover).join('\n') : '- No gainers returned.'
+        }`
+      )
+    }
+
+    if (!gainersOnly || losersOnly) {
+      const losers = await fetchMarketMovers('day_losers')
+      sections.push(
+        `Top stock losers so far:\n${
+          losers.length ? losers.map(formatMarketMover).join('\n') : '- No losers returned.'
+        }`
+      )
+    }
+
+    return addBasicAssistantMessage(
+      userMessage,
+      `${sections.join(
+        '\n\n'
+      )}\n\nSource: Yahoo Finance market screener. This is informational only, not financial advice.`
+    )
+  } catch (err) {
+    db.addLog('system', `Market movers lookup failed: ${(err as Error).message}`)
+    return addBasicAssistantMessage(
+      userMessage,
+      "I couldn't retrieve current stock market movers right now. Please try again in a moment."
+    )
+  }
+}
+
 function isSummarizeTextRequest(text: string): boolean {
   const lower = text.toLowerCase()
   if (!/\b(summarize|summarise|summary|sum up|tl;dr|tldr)\b/.test(lower)) return false
@@ -1503,6 +1655,12 @@ function registerIpc(): void {
     if (weatherResult) {
       emit({ type: 'data-changed' })
       return weatherResult
+    }
+
+    const marketMoversResult = await tryMarketMoversNow(text.trim(), userMessage)
+    if (marketMoversResult) {
+      emit({ type: 'data-changed' })
+      return marketMoversResult
     }
 
     const summaryResult = await trySummarizeTextNow(text.trim(), userMessage)
