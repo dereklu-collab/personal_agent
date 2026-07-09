@@ -20,7 +20,12 @@ import {
   AssistantError
 } from './assistant'
 import { startScheduler, stopScheduler, executeAction } from './scheduler'
-import { createMacCalendarEventForTask, createMacReminder } from './macNative'
+import {
+  createMacCalendarEventForTask,
+  createMacReminder,
+  deleteMacCalendarEventForTask,
+  deleteMacReminder
+} from './macNative'
 
 let win: BrowserWindow | null = null
 let expanded = false
@@ -204,6 +209,23 @@ function syncReminderToMac(title: string, datetime: string): void {
   void createMacReminder(title, datetime).then((result) => {
     if (!result.ok && !result.skipped) {
       db.addLog('system', `Reminders sync failed for "${title}": ${result.reason}`)
+    }
+  })
+}
+
+function removeTaskFromMacCalendar(title: string, due: string | null): void {
+  if (!due) return
+  void deleteMacCalendarEventForTask(title, due).then((result) => {
+    if (!result.ok && !result.skipped) {
+      db.addLog('system', `Calendar removal failed for task "${title}": ${result.reason}`)
+    }
+  })
+}
+
+function removeReminderFromMac(title: string, datetime: string): void {
+  void deleteMacReminder(title, datetime).then((result) => {
+    if (!result.ok && !result.skipped) {
+      db.addLog('system', `Reminders removal failed for "${title}": ${result.reason}`)
     }
   })
 }
@@ -1038,12 +1060,14 @@ function normalizedWords(value: string): string[] {
     .filter((word) => word.length > 1 && !['the', 'for', 'with'].includes(word))
 }
 
-function findTaskToDelete(title: string | null): { id: number; title: string } | null {
+function findTaskToDelete(
+  title: string | null
+): { id: number; title: string; due: string | null } | null {
   if (!title) return null
   const tasks = db.listTasks()
   const normalizedTitle = title.toLowerCase()
   const exact = tasks.find((t) => t.title.toLowerCase() === normalizedTitle)
-  if (exact) return { id: exact.id, title: exact.title }
+  if (exact) return { id: exact.id, title: exact.title, due: exact.due }
 
   const titleWords = normalizedWords(title)
   if (titleWords.length === 0) return null
@@ -1063,7 +1087,7 @@ function findTaskToDelete(title: string | null): { id: number; title: string } |
   if (scored.length > 1 && scored[0].score === scored[1].score) return null
 
   const best = scored[0]?.task
-  return best ? { id: best.id, title: best.title } : null
+  return best ? { id: best.id, title: best.title, due: best.due } : null
 }
 
 function previousTaskRemovalTitle(userMessage: Message): string | null {
@@ -1099,6 +1123,7 @@ function tryDeleteTaskNow(text: string, userMessage: Message): AssistantResult |
   }
 
   db.deleteTask(task.id)
+  removeTaskFromMacCalendar(task.title, task.due)
   const assistantMessage = db.addMessage(
     'assistant',
     `Deleted task: ${task.title}.`,
@@ -1258,7 +1283,9 @@ function tryUpdateLastScheduleNow(text: string, userMessage: Message): Assistant
   if (!updatedDate) return null
 
   if (target.kind === 'reminder') {
+    removeReminderFromMac(target.title, target.datetime)
     db.rescheduleReminder(target.id, updatedDate)
+    syncReminderToMac(target.title, updatedDate)
     const assistantMessage = db.addMessage(
       'assistant',
       `Updated reminder: ${target.title}. I’ll remind you ${formatReminderTime(updatedDate)}.`,
@@ -1271,7 +1298,9 @@ function tryUpdateLastScheduleNow(text: string, userMessage: Message): Assistant
     }
   }
 
+  removeTaskFromMacCalendar(target.title, target.due)
   db.updateTaskDue(target.id, updatedDate)
+  syncTaskToMacCalendar(target.title, updatedDate)
   const assistantMessage = db.addMessage(
     'assistant',
     `Updated task: ${target.title}. It is due ${formatReminderTime(updatedDate)}.`,
@@ -1415,13 +1444,15 @@ function lastCreatedReminderTitle(userMessage: Message): string | null {
   return matches.at(-1) ?? null
 }
 
-function findActiveReminder(title: string | null): { id: number; title: string } | null {
+function findActiveReminder(
+  title: string | null
+): { id: number; title: string; datetime: string } | null {
   const reminders = db.listReminders()
   if (!title) return null
 
   const normalizedTitle = title.toLowerCase()
   const exact = reminders.find((r) => r.title.toLowerCase() === normalizedTitle)
-  if (exact) return { id: exact.id, title: exact.title }
+  if (exact) return { id: exact.id, title: exact.title, datetime: exact.datetime }
 
   const titleWords = normalizedWords(title)
   if (titleWords.length === 0) return null
@@ -1441,7 +1472,7 @@ function findActiveReminder(title: string | null): { id: number; title: string }
   if (scored.length > 1 && scored[0].score === scored[1].score) return null
 
   const best = scored[0]?.reminder
-  return best ? { id: best.id, title: best.title } : null
+  return best ? { id: best.id, title: best.title, datetime: best.datetime } : null
 }
 
 function previousReminderRemovalTitle(userMessage: Message): string | null {
@@ -1487,6 +1518,7 @@ function removeReminderByTitle(
   }
 
   db.dismissReminder(reminder.id)
+  removeReminderFromMac(reminder.title, reminder.datetime)
   const assistantMessage = db.addMessage(
     'assistant',
     `Removed reminder: ${reminder.title}.`,
@@ -1539,8 +1571,14 @@ function tryClearTasksAndRemindersNow(
   const tasks = shouldClearTasks ? db.listTasks() : []
   const reminders = shouldClearReminders ? db.listReminders() : []
 
-  for (const task of tasks) db.deleteTask(task.id)
-  for (const reminder of reminders) db.dismissReminder(reminder.id)
+  for (const task of tasks) {
+    db.deleteTask(task.id)
+    removeTaskFromMacCalendar(task.title, task.due)
+  }
+  for (const reminder of reminders) {
+    db.dismissReminder(reminder.id)
+    removeReminderFromMac(reminder.title, reminder.datetime)
+  }
 
   const parts: string[] = []
   if (shouldClearTasks) parts.push(`${tasks.length} task${tasks.length === 1 ? '' : 's'}`)
@@ -1825,23 +1863,42 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('tasks:list', () => db.listTasks())
-  ipcMain.handle('tasks:toggle', (_e, id: unknown) =>
-    typeof id === 'number' ? db.toggleTask(id) : null
-  )
+  ipcMain.handle('tasks:toggle', (_e, id: unknown) => {
+    if (typeof id !== 'number') return null
+    const before = db.listTasks().find((task) => task.id === id) ?? null
+    const after = db.toggleTask(id)
+    if (before && after) {
+      if (after.done) removeTaskFromMacCalendar(before.title, before.due)
+      else syncTaskToMacCalendar(after.title, after.due)
+    }
+    return after
+  })
   ipcMain.handle('tasks:updateDue', (_e, id: unknown, due: unknown) => {
     if (typeof id !== 'number') return null
     if (due !== null && typeof due !== 'string') return null
     if (typeof due === 'string' && Number.isNaN(Date.parse(due))) return null
-    return db.updateTaskDue(id, due)
+    const before = db.listTasks().find((task) => task.id === id) ?? null
+    const after = db.updateTaskDue(id, due)
+    if (before) removeTaskFromMacCalendar(before.title, before.due)
+    if (after && !after.done) syncTaskToMacCalendar(after.title, after.due)
+    return after
   })
   ipcMain.handle('tasks:delete', (_e, id: unknown) => {
-    if (typeof id === 'number') db.deleteTask(id)
+    if (typeof id === 'number') {
+      const task = db.listTasks().find((item) => item.id === id) ?? null
+      db.deleteTask(id)
+      if (task) removeTaskFromMacCalendar(task.title, task.due)
+    }
     return true
   })
 
   ipcMain.handle('reminders:list', () => db.listReminders())
   ipcMain.handle('reminders:dismiss', (_e, id: unknown) => {
-    if (typeof id === 'number') db.dismissReminder(id)
+    if (typeof id === 'number') {
+      const reminder = db.listReminders().find((item) => item.id === id) ?? null
+      db.dismissReminder(id)
+      if (reminder) removeReminderFromMac(reminder.title, reminder.datetime)
+    }
     return true
   })
 

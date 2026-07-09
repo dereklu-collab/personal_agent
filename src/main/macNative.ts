@@ -72,6 +72,62 @@ function run(argv) {
 }
 `
 
+const DELETE_CALENDAR_EVENT_SCRIPT = `
+function run(argv) {
+  var title = argv[0];
+  var startIso = argv[1];
+  var targetTime = new Date(startIso).getTime();
+  var toleranceMs = 2 * 60 * 1000;
+  var Calendar = Application('Calendar');
+  var calendars = Calendar.calendars();
+  var deleted = 0;
+
+  for (var c = 0; c < calendars.length; c++) {
+    var events = calendars[c].events();
+    for (var i = events.length - 1; i >= 0; i--) {
+      try {
+        var eventTitle = events[i].summary();
+        var eventStart = events[i].startDate().getTime();
+        if (eventTitle === title && Math.abs(eventStart - targetTime) <= toleranceMs) {
+          events[i].delete();
+          deleted++;
+        }
+      } catch (e) {}
+    }
+  }
+}
+`
+
+const DELETE_REMINDER_SCRIPT = `
+function run(argv) {
+  var title = argv[0];
+  var remindIso = argv[1];
+  var targetTime = new Date(remindIso).getTime();
+  var toleranceMs = 2 * 60 * 1000;
+  var Reminders = Application('Reminders');
+  var lists = Reminders.lists();
+  var deleted = 0;
+
+  for (var l = 0; l < lists.length; l++) {
+    var reminders = lists[l].reminders();
+    for (var i = reminders.length - 1; i >= 0; i--) {
+      try {
+        var reminderTitle = reminders[i].name();
+        var reminderDate = reminders[i].remindMeDate();
+        if (
+          reminderTitle === title &&
+          reminderDate &&
+          Math.abs(reminderDate.getTime() - targetTime) <= toleranceMs
+        ) {
+          reminders[i].delete();
+          deleted++;
+        }
+      } catch (e) {}
+    }
+  }
+}
+`
+
 export async function createMacCalendarEventForTask(
   title: string,
   startIso: string,
@@ -96,4 +152,29 @@ export async function createMacReminder(
   }
 
   return runJxa(REMINDERS_ITEM_SCRIPT, [title, remindAt.toISOString()])
+}
+
+export async function deleteMacCalendarEventForTask(
+  title: string,
+  startIso: string | null
+): Promise<NativeSyncResult> {
+  if (!startIso) return { ok: false, skipped: true, reason: 'Task has no due date.' }
+  const start = new Date(startIso)
+  if (Number.isNaN(start.getTime())) {
+    return { ok: false, skipped: true, reason: 'Task has an invalid due date.' }
+  }
+
+  return runJxa(DELETE_CALENDAR_EVENT_SCRIPT, [title, start.toISOString()])
+}
+
+export async function deleteMacReminder(
+  title: string,
+  remindIso: string
+): Promise<NativeSyncResult> {
+  const remindAt = new Date(remindIso)
+  if (Number.isNaN(remindAt.getTime())) {
+    return { ok: false, skipped: true, reason: 'Reminder has an invalid date.' }
+  }
+
+  return runJxa(DELETE_REMINDER_SCRIPT, [title, remindAt.toISOString()])
 }
