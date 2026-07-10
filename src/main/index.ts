@@ -927,6 +927,7 @@ interface StockQuote {
   changePercent: number | null
   marketState: string | null
   exchange: string | null
+  source: string
 }
 
 const COMPANY_TICKERS: Record<string, string> = {
@@ -1088,7 +1089,7 @@ async function resolveStockSymbol(text: string, userMessage: Message): Promise<s
   return typeof quote?.symbol === 'string' ? quote.symbol.trim().toUpperCase() : null
 }
 
-async function fetchStockQuote(symbol: string): Promise<StockQuote | null> {
+async function fetchYahooQuoteApiStockQuote(symbol: string): Promise<StockQuote | null> {
   const url =
     'https://query1.finance.yahoo.com/v7/finance/quote?' +
     new URLSearchParams({
@@ -1137,8 +1138,87 @@ async function fetchStockQuote(symbol: string): Promise<StockQuote | null> {
     change: readNumber(quote.regularMarketChange),
     changePercent: readNumber(quote.regularMarketChangePercent),
     marketState: typeof quote.marketState === 'string' ? quote.marketState : null,
-    exchange: typeof quote.fullExchangeName === 'string' ? quote.fullExchangeName : null
+    exchange: typeof quote.fullExchangeName === 'string' ? quote.fullExchangeName : null,
+    source: 'Yahoo Finance quote API'
   }
+}
+
+async function fetchYahooChartStockQuote(symbol: string): Promise<StockQuote | null> {
+  const url =
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?` +
+    new URLSearchParams({
+      range: '1d',
+      interval: '1m'
+    }).toString()
+  const res = await fetch(url, {
+    headers: {
+      'user-agent': 'AI Assistant desktop app'
+    }
+  })
+  if (!res.ok) throw new Error(`Yahoo Finance chart failed with ${res.status}`)
+  const data = (await res.json()) as {
+    chart?: {
+      result?: {
+        meta?: {
+          symbol?: unknown
+          shortName?: unknown
+          longName?: unknown
+          regularMarketPrice?: unknown
+          previousClose?: unknown
+          chartPreviousClose?: unknown
+          currency?: unknown
+          fullExchangeName?: unknown
+          exchangeName?: unknown
+        }
+      }[]
+    }
+  }
+  const meta = data.chart?.result?.[0]?.meta
+  if (!meta) return null
+
+  const price = readNumber(meta.regularMarketPrice)
+  const previousClose = readNumber(meta.previousClose) ?? readNumber(meta.chartPreviousClose)
+  const change = price !== null && previousClose !== null ? price - previousClose : null
+  const changePercent =
+    change !== null && previousClose !== null && previousClose !== 0
+      ? (change / previousClose) * 100
+      : null
+  const resolvedSymbol = typeof meta.symbol === 'string' ? meta.symbol.trim() : symbol
+  const name =
+    typeof meta.shortName === 'string'
+      ? meta.shortName
+      : typeof meta.longName === 'string'
+        ? meta.longName
+        : resolvedSymbol
+  const exchange =
+    typeof meta.fullExchangeName === 'string'
+      ? meta.fullExchangeName
+      : typeof meta.exchangeName === 'string'
+        ? meta.exchangeName
+        : null
+
+  return {
+    symbol: resolvedSymbol,
+    name: name.trim(),
+    price,
+    currency: typeof meta.currency === 'string' ? meta.currency : 'USD',
+    change,
+    changePercent,
+    marketState: null,
+    exchange,
+    source: 'Yahoo Finance chart API'
+  }
+}
+
+async function fetchStockQuote(symbol: string): Promise<StockQuote | null> {
+  try {
+    const quote = await fetchYahooQuoteApiStockQuote(symbol)
+    if (quote) return quote
+  } catch (err) {
+    db.addLog('system', `Yahoo quote endpoint failed: ${(err as Error).message}`)
+  }
+
+  return fetchYahooChartStockQuote(symbol)
 }
 
 function formatStockQuote(quote: StockQuote): string {
@@ -1153,7 +1233,7 @@ function formatStockQuote(quote: StockQuote): string {
       : ` (${quote.changePercent >= 0 ? '+' : ''}${quote.changePercent.toFixed(2)}%)`
   const exchange = quote.exchange ? ` on ${quote.exchange}` : ''
   const marketState = quote.marketState ? ` Market state: ${quote.marketState}.` : ''
-  return `${quote.symbol} (${quote.name}) is trading at ${price}${change}${changePercent}${exchange}.${marketState}\n\nSource: Yahoo Finance quote API. This is informational only, not financial advice.`
+  return `${quote.symbol} (${quote.name}) is trading at ${price}${change}${changePercent}${exchange}.${marketState}\n\nSource: ${quote.source}. This is informational only, not financial advice.`
 }
 
 async function tryStockQuoteNow(
