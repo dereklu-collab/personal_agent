@@ -14,6 +14,7 @@ import {
 import {
   runAssistant,
   runGeneralChat,
+  rewriteText,
   summarizeText,
   summarizeWritingProfile,
   transcribeAudio,
@@ -301,14 +302,14 @@ function tryHelpCommand(text: string, userMessage: Message): AssistantResult | n
     [
       'Here are useful things you can ask me to do:',
       '',
-      '- Summarize: `summarize: paste text here` or `summarize this article: https://...`',
+      '- Writing: `rewrite this: paste text here`, `summarize: paste text here`, or `summarize this article: https://...`',
       '- Live info: `weather in NYC`, `META stock price`, `current market movers`',
       '- Time: `what time is it in London?`, `convert 5pm PST to EST`, or `when is 5-7pm PST to EST`',
       '- Tasks: `create a task to call Derek tomorrow at 2pm`',
       '- Reminders: `remind me in 1 hour to leave work`',
       '- Edit/delete: `move that reminder to 10pm`, `delete the meeting task`, `remove all tasks and reminders`',
       '- Apps/sites: `open Slack`, `open Gmail in Chrome`, `close Gmail in Chrome`, `open Chrome in 10 minutes`',
-      '- Writing: `write an email to Rose about the referral inquiry`',
+      '- Email: `write an email to Rose about the referral inquiry`',
       '',
       'Voice input works with the same natural phrases.'
     ].join('\n')
@@ -1385,6 +1386,80 @@ function isSummarizeTextRequest(text: string): boolean {
   const lower = text.toLowerCase()
   if (!/\b(summarize|summarise|summary|sum up|tl;dr|tldr)\b/.test(lower)) return false
   return !/\b(plan|plans|today|daily)\b/.test(lower)
+}
+
+function isRewriteTextRequest(text: string): boolean {
+  const lower = text.toLowerCase()
+  return (
+    /\b(rewrite|reword|paraphrase|revise|polish|clean up|improve)\b/.test(lower) ||
+    /\b(make this|make it)\s+sound\b/.test(lower) ||
+    /\b(grammar check|fix grammar|fix the grammar)\b/.test(lower)
+  )
+}
+
+function stripWrappingQuotes(text: string): string {
+  let body = text.trim()
+  const quotePairs: [string, string][] = [
+    ['"', '"'],
+    ["'", "'"],
+    ['“', '”'],
+    ['‘', '’']
+  ]
+  for (const [open, close] of quotePairs) {
+    if (body.startsWith(open) && body.endsWith(close)) {
+      body = body.slice(open.length, -close.length).trim()
+      break
+    }
+  }
+  return body
+}
+
+function extractTextToRewrite(text: string): string | null {
+  const trimmed = text.trim()
+  const quoted =
+    trimmed.match(/[“"]([\s\S]{20,})[”"]\s*$/)?.[1]?.trim() ??
+    trimmed.match(/[‘']([\s\S]{20,})[’']\s*$/)?.[1]?.trim()
+  if (quoted) return quoted
+
+  const colon = trimmed.match(
+    /\b(?:rewrite|reword|paraphrase|revise|polish|clean up|improve|grammar check|fix grammar|fix the grammar)\b[^:]*:\s*([\s\S]+)/i
+  )
+  const colonBody = colon?.[1] ? stripWrappingQuotes(colon[1]) : ''
+  if (colonBody.length >= 10) return colonBody
+
+  const body = trimmed
+    .replace(/^\s*(please\s+)?(?:can you\s+|could you\s+)?(?:rewrite|reword|paraphrase|revise|polish|clean up|improve)\s*/i, '')
+    .replace(/^(this|the following|this text|this paragraph|this passage)\s*/i, '')
+    .trim()
+  const stripped = stripWrappingQuotes(body)
+  if (!stripped || /^(this|it|this text|this paragraph|the text)$/i.test(stripped)) return null
+  return stripped.length >= 20 ? stripped : null
+}
+
+async function tryRewriteTextNow(
+  text: string,
+  userMessage: Message
+): Promise<AssistantResult | null> {
+  if (!isRewriteTextRequest(text)) return null
+
+  const textToRewrite = extractTextToRewrite(text)
+  if (!textToRewrite) {
+    return addBasicAssistantMessage(
+      userMessage,
+      'Paste the text you want rewritten, like: "rewrite this: ..."'
+    )
+  }
+
+  try {
+    const rewritten = await rewriteText(textToRewrite, text)
+    return addBasicAssistantMessage(userMessage, rewritten || 'I could not rewrite that text.')
+  } catch (err) {
+    db.addLog('system', `Rewrite text failed: ${(err as Error).message}`)
+    return addBasicAssistantMessage(
+      userMessage,
+      "I couldn't rewrite that text right now. Please try again in a moment."
+    )
+  }
 }
 
 function extractTextToSummarize(text: string): string | null {
@@ -2776,6 +2851,12 @@ function registerIpc(): void {
     if (marketMoversResult) {
       emit({ type: 'data-changed' })
       return marketMoversResult
+    }
+
+    const rewriteResult = await tryRewriteTextNow(text.trim(), userMessage)
+    if (rewriteResult) {
+      emit({ type: 'data-changed' })
+      return rewriteResult
     }
 
     const summaryResult = await trySummarizeTextNow(text.trim(), userMessage)

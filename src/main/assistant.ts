@@ -474,6 +474,30 @@ export async function runGeneralChat(userText: string): Promise<string> {
   return raw.trim()
 }
 
+/** Rewrite or polish provided text without using chat history or creating side effects. */
+export async function rewriteText(text: string, instruction: string): Promise<string> {
+  const s = getRawSettings()
+  if (s.provider !== 'ollama' && !s.apiKey) {
+    throw new AssistantError('No API key set. Open Settings and add your key.')
+  }
+  const system =
+    'You rewrite, polish, or paraphrase only the text the user provides. ' +
+    'Preserve the original meaning, facts, and approximate length unless the instruction asks otherwise. ' +
+    'Do not turn the text into an email, letter, task, reminder, or explanation. ' +
+    'Do not include labels, preambles, notes, markdown, quotation marks around the full answer, or commentary. Output only the rewritten text.'
+  const userText = `Instruction:
+${instruction}
+
+Text to rewrite:
+${text}`
+  const raw = await callConfiguredPlainModel(s, system, userText)
+  return raw
+    .replace(/^```(?:text|markdown)?/i, '')
+    .replace(/```$/i, '')
+    .replace(/^\s*(?:rewritten|revised|polished|paraphrased)\s+(?:text|version|paragraph)\s*:?\s*/i, '')
+    .trim()
+}
+
 /** Ask the model to summarize the user's writing samples into a style profile. */
 export async function summarizeWritingProfile(samples: string[]): Promise<string> {
   const s = getRawSettings()
