@@ -12,6 +12,7 @@ import {
   openKnownSite
 } from './browserControl'
 import {
+  applyWritingStyleToText,
   runAssistant,
   runGeneralChat,
   rewriteText,
@@ -1462,6 +1463,121 @@ async function tryRewriteTextNow(
   }
 }
 
+function isWritingStyleRestyleRequest(text: string): boolean {
+  const lower = text.toLowerCase()
+  const mentionsStyle =
+    /\b(style|writing style|my style|my tone|my voice|sound like me|sounds like me|different style)\b/.test(
+      lower
+    )
+  if (!mentionsStyle) return false
+
+  return (
+    /\b(rewrite|reword|revise|polish|redo|regenerate|generate|make|change|convert|apply)\b/.test(
+      lower
+    ) ||
+    /\b(same|previous|last|that|this|it|response|draft|email|message)\b/.test(lower)
+  )
+}
+
+function latestAssistantMessage(currentMessageId: number): Message | null {
+  const messages = db.listMessages(30)
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i]
+    if (message.id === currentMessageId) continue
+    if (message.role === 'assistant') return message
+  }
+  return null
+}
+
+function emailDraftFromAssistantMessage(message: Message): {
+  to?: string
+  subject?: string
+  body: string
+} | null {
+  const draftStart = message.content.match(/(?:^|\n)Draft email:\s*/i)
+  if (!draftStart && message.intent !== 'generate_email') return null
+
+  const rawDraft = draftStart
+    ? message.content.slice((draftStart.index ?? 0) + draftStart[0].length)
+    : message.content
+  const to = rawDraft.match(/^\s*To:\s*(.+)$/im)?.[1]?.trim()
+  const subject = rawDraft.match(/^\s*Subject:\s*(.+)$/im)?.[1]?.trim()
+  const body = cleanEmailBodyForDisplay(
+    rawDraft
+      .split('\n')
+      .filter((line) => !/^\s*(To|Subject):\s*/i.test(line))
+      .join('\n')
+  )
+
+  return body ? { to, subject, body } : null
+}
+
+function extractTextToRestyle(text: string, userMessage: Message): {
+  text: string
+  email?: {
+    to?: string
+    subject?: string
+    body: string
+  }
+} | null {
+  const explicitText = extractTextToRewrite(text)
+  if (explicitText) return { text: explicitText }
+
+  const previous = latestAssistantMessage(userMessage.id)
+  if (!previous) return null
+
+  const email = emailDraftFromAssistantMessage(previous)
+  if (email) return { text: email.body, email }
+
+  const content = cleanEmailBodyForDisplay(previous.content)
+  return content ? { text: content } : null
+}
+
+async function tryApplyWritingStyleNow(
+  text: string,
+  userMessage: Message
+): Promise<AssistantResult | null> {
+  if (!isWritingStyleRestyleRequest(text)) return null
+
+  const target = extractTextToRestyle(text, userMessage)
+  if (!target) {
+    return addBasicAssistantMessage(
+      userMessage,
+      'Paste the text you want restyled, or ask me to restyle the previous response.'
+    )
+  }
+
+  try {
+    const styled = await applyWritingStyleToText(target.text, text)
+    if (target.email) {
+      const email = {
+        ...target.email,
+        body: styled
+      }
+      const assistantMessage = db.addMessage(
+        'assistant',
+        `Here is a draft you can copy and paste.\n\n${formatEmailDraft(email)}`,
+        'generate_email'
+      )
+      return {
+        userMessage,
+        assistantMessage,
+        intent: 'generate_email',
+        email
+      }
+    }
+
+    return addBasicAssistantMessage(userMessage, styled || 'I could not apply that style.')
+  } catch (err) {
+    const message =
+      err instanceof AssistantError && /writing style profile/i.test(err.message)
+        ? 'Build a writing style profile first, then ask me to restyle the response.'
+        : "I couldn't apply the writing style right now. Please try again in a moment."
+    db.addLog('system', `Apply writing style failed: ${(err as Error).message}`)
+    return addBasicAssistantMessage(userMessage, message)
+  }
+}
+
 function extractTextToSummarize(text: string): string | null {
   const trimmed = text.trim()
   const colon = trimmed.match(/\b(?:summarize|summarise|sum up|tl;dr|tldr)\b[^:]*:\s*([\s\S]+)/i)
@@ -2851,6 +2967,12 @@ function registerIpc(): void {
     if (marketMoversResult) {
       emit({ type: 'data-changed' })
       return marketMoversResult
+    }
+
+    const writingStyleResult = await tryApplyWritingStyleNow(text.trim(), userMessage)
+    if (writingStyleResult) {
+      emit({ type: 'data-changed' })
+      return writingStyleResult
     }
 
     const rewriteResult = await tryRewriteTextNow(text.trim(), userMessage)

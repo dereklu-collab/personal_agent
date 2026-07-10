@@ -389,8 +389,9 @@ async function applyWritingStyleToEmail(
   const system =
     'You are an email style editor. Revise the provided draft so it matches the saved writing style profile. ' +
     'Preserve the same recipient, purpose, facts, names, dates, locations, and ask. ' +
-    'Lightly fix grammar and clarity, but do not completely rewrite the message or add new details. ' +
-    'Use the profile greeting/sign-off habits when present. Output only the revised email body. ' +
+    'Make the style adaptation obvious: match the user’s tone, sentence rhythm, formality, punctuation habits, word choice, greeting, and sign-off. ' +
+    'Fix grammar and clarity, but do not add new facts or change the ask. ' +
+    'If the original draft is generic, rewrite it enough that it clearly sounds like the profile while preserving the same meaning. Output only the revised email body. ' +
     'Do not include notes, explanations, labels, commentary, or reasons for changes.'
 
   const userText = `Saved writing style profile:
@@ -416,6 +417,36 @@ Revise the draft to match the saved style profile while keeping the same meaning
   } catch {
     return response
   }
+}
+
+/** Apply the saved writing profile to provided text without using chat history. */
+export async function applyWritingStyleToText(text: string, instruction: string): Promise<string> {
+  const s = getRawSettings()
+  if (s.provider !== 'ollama' && !s.apiKey) {
+    throw new AssistantError('No API key set. Open Settings and add your key.')
+  }
+
+  const profile = getWritingProfile()
+  if (!profile?.summary.trim()) {
+    throw new AssistantError('Build a writing style profile first.')
+  }
+
+  const system =
+    'You are a writing style editor. Rewrite the provided text so it clearly matches the saved writing style profile. ' +
+    'Preserve the same purpose, meaning, facts, names, dates, and requests. Do not add new details. ' +
+    'Make the style adaptation obvious by matching tone, sentence rhythm, formality, punctuation habits, word choice, and sign-off habits when relevant. ' +
+    'Do not turn the text into a different format unless the user explicitly asks. Output only the revised text, with no labels, notes, markdown, or commentary.'
+
+  const userText = `Saved writing style profile:
+${profile.summary}
+
+User instruction:
+${instruction}
+
+Text to restyle:
+${text}`
+
+  return cleanStyledEmailBody(await callConfiguredPlainModel(s, system, userText))
 }
 
 /**
