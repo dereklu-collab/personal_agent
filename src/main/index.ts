@@ -12,14 +12,22 @@ import {
   openKnownSite
 } from './browserControl'
 import {
+  applyWritingStyleToText,
   runAssistant,
   runGeneralChat,
+  rewriteText,
   summarizeText,
   summarizeWritingProfile,
   transcribeAudio,
   AssistantError
 } from './assistant'
 import { startScheduler, stopScheduler, executeAction } from './scheduler'
+import {
+  createMacCalendarEventForTask,
+  createMacReminder,
+  deleteMacCalendarEventForTask,
+  deleteMacReminder
+} from './macNative'
 
 let win: BrowserWindow | null = null
 let expanded = false
@@ -178,6 +186,13 @@ function emit(event: BridgeEvent): void {
   win?.webContents.send('bridge:event', event)
 }
 
+function cleanEmailBodyForDisplay(body: string): string {
+  return body
+    .replace(/\n{1,}\s*(?:Note|Notes|P\.S\. about the draft):[\s\S]*$/i, '')
+    .replace(/\n{1,}\s*\([^)]*(?:removed|changed|adjusted|revised|tone|formal|informal)[^)]*\)\s*$/i, '')
+    .trim()
+}
+
 function formatEmailDraft(email: {
   to?: string
   subject?: string
@@ -186,8 +201,42 @@ function formatEmailDraft(email: {
   const parts = ['Draft email:']
   if (email.to) parts.push(`To: ${email.to}`)
   if (email.subject) parts.push(`Subject: ${email.subject}`)
-  parts.push('', email.body.trim())
+  parts.push('', cleanEmailBodyForDisplay(email.body))
   return parts.join('\n')
+}
+
+function syncTaskToMacCalendar(title: string, due: string | null): void {
+  if (!due) return
+  void createMacCalendarEventForTask(title, due).then((result) => {
+    if (!result.ok && !result.skipped) {
+      db.addLog('system', `Calendar sync failed for task "${title}": ${result.reason}`)
+    }
+  })
+}
+
+function syncReminderToMac(title: string, datetime: string): void {
+  void createMacReminder(title, datetime).then((result) => {
+    if (!result.ok && !result.skipped) {
+      db.addLog('system', `Reminders sync failed for "${title}": ${result.reason}`)
+    }
+  })
+}
+
+function removeTaskFromMacCalendar(title: string, due: string | null): void {
+  if (!due) return
+  void deleteMacCalendarEventForTask(title, due).then((result) => {
+    if (!result.ok && !result.skipped) {
+      db.addLog('system', `Calendar removal failed for task "${title}": ${result.reason}`)
+    }
+  })
+}
+
+function removeReminderFromMac(title: string, datetime: string): void {
+  void deleteMacReminder(title, datetime).then((result) => {
+    if (!result.ok && !result.skipped) {
+      db.addLog('system', `Reminders removal failed for "${title}": ${result.reason}`)
+    }
+  })
 }
 
 function hasImmediateOpenIntent(text: string): boolean {
@@ -254,14 +303,14 @@ function tryHelpCommand(text: string, userMessage: Message): AssistantResult | n
     [
       'Here are useful things you can ask me to do:',
       '',
-      '- Summarize: `summarize: paste text here` or `summarize this article: https://...`',
-      '- Live info: `weather in NYC`, `current market movers`, `top stock gainers`',
-      '- Time: `what time is it in London?` or `convert 5pm PST to EST`',
+      '- Writing: `rewrite this: paste text here`, `summarize: paste text here`, or `summarize this article: https://...`',
+      '- Live info: `weather in NYC`, `META stock price`, `current market movers`',
+      '- Time: `what time is it in London?`, `convert 5pm PST to EST`, or `when is 5-7pm PST to EST`',
       '- Tasks: `create a task to call Derek tomorrow at 2pm`',
       '- Reminders: `remind me in 1 hour to leave work`',
       '- Edit/delete: `move that reminder to 10pm`, `delete the meeting task`, `remove all tasks and reminders`',
       '- Apps/sites: `open Slack`, `open Gmail in Chrome`, `close Gmail in Chrome`, `open Chrome in 10 minutes`',
-      '- Writing: `write an email to Rose about the referral inquiry`',
+      '- Email: `write an email to Rose about the referral inquiry`',
       '',
       'Voice input works with the same natural phrases.'
     ].join('\n')
@@ -332,9 +381,59 @@ function formatConvertedClock(totalMinutes: number): { time: string; dayNote: st
   return { time: `${hour12}${minuteText} ${meridiem}`, dayNote }
 }
 
+function parseClockMinutes(
+  hourText: string,
+  minuteText: string | undefined,
+  meridiemText: string
+): number | null {
+  let hour = Number(hourText)
+  const minute = minuteText ? Number(minuteText) : 0
+  const meridiem = meridiemText.toLowerCase()
+  if (hour < 1 || hour > 12 || minute < 0 || minute > 59) return null
+  if (meridiem === 'pm' && hour < 12) hour += 12
+  if (meridiem === 'am' && hour === 12) hour = 0
+  return hour * 60 + minute
+}
+
+function formatConvertedRange(startMinutes: number, endMinutes: number): {
+  time: string
+  dayNote: string
+} {
+  const start = formatConvertedClock(startMinutes)
+  const end = formatConvertedClock(endMinutes)
+  const dayNote =
+    start.dayNote && start.dayNote === end.dayNote
+      ? start.dayNote
+      : start.dayNote || end.dayNote
+  return { time: `${start.time}-${end.time}`, dayNote }
+}
+
 function tryConvertTimeZone(text: string, userMessage: Message): AssistantResult | null {
+  const rangeMatch = text.match(
+    /\b(?:convert|what(?:'s| is)|when(?:'s| is)|change)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:-|to|through|until)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s+([a-z]{2,4})\s+(?:to|in|into)\s+([a-z]{2,4})\b/i
+  )
+  if (rangeMatch) {
+    const source = parseFixedTimeZone(rangeMatch[7])
+    const target = parseFixedTimeZone(rangeMatch[8])
+    if (!source || !target) return null
+
+    const firstMeridiem = rangeMatch[3] ?? rangeMatch[6]
+    const sourceStart = parseClockMinutes(rangeMatch[1], rangeMatch[2], firstMeridiem)
+    const sourceEnd = parseClockMinutes(rangeMatch[4], rangeMatch[5], rangeMatch[6])
+    if (sourceStart === null || sourceEnd === null) return null
+
+    const offset = target.offsetMinutes - source.offsetMinutes
+    const converted = formatConvertedRange(sourceStart + offset, sourceEnd + offset)
+    const sourceRange = formatConvertedRange(sourceStart, sourceEnd)
+
+    return addBasicAssistantMessage(
+      userMessage,
+      `${sourceRange.time} ${source.label} is ${converted.time} ${target.label}${converted.dayNote}.`
+    )
+  }
+
   const match = text.match(
-    /\b(?:convert|what(?:'s| is)|change)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s+([a-z]{2,4})\s+(?:to|in|into)\s+([a-z]{2,4})\b/i
+    /\b(?:convert|what(?:'s| is)|when(?:'s| is)|change)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s+([a-z]{2,4})\s+(?:to|in|into)\s+([a-z]{2,4})\b/i
   )
   if (!match) return null
 
@@ -342,14 +441,8 @@ function tryConvertTimeZone(text: string, userMessage: Message): AssistantResult
   const target = parseFixedTimeZone(match[5])
   if (!source || !target) return null
 
-  let hour = Number(match[1])
-  const minute = match[2] ? Number(match[2]) : 0
-  const meridiem = match[3].toLowerCase()
-  if (hour < 1 || hour > 12 || minute < 0 || minute > 59) return null
-  if (meridiem === 'pm' && hour < 12) hour += 12
-  if (meridiem === 'am' && hour === 12) hour = 0
-
-  const sourceMinutes = hour * 60 + minute
+  const sourceMinutes = parseClockMinutes(match[1], match[2], match[3])
+  if (sourceMinutes === null) return null
   const targetMinutes = sourceMinutes - source.offsetMinutes + target.offsetMinutes
   const converted = formatConvertedClock(targetMinutes)
 
@@ -381,8 +474,34 @@ function timeZoneForText(text: string): { timeZone: string; label: string | null
   }
 }
 
+function isEmailDraftLikeRequest(text: string): boolean {
+  return (
+    /\b(write|draft|compose|generate|create)\b.*\b(e-?mail|message|reply)\b/i.test(text) ||
+    /\b(e-?mail|message|reply)\s+to\b/i.test(text)
+  )
+}
+
 function isWeatherRequest(text: string): boolean {
-  return /\b(weather|temperature|forecast)\b/i.test(text)
+  return (
+    /\b(weather|temperature|forecast|conditions)\b/i.test(text) ||
+    /\b(what'?s|what is|how'?s|how is)\s+(it|outside)\s+(right now|now|currently)?\s*(in|at|near)\b/i.test(
+      text
+    )
+  )
+}
+
+function normalizeWeatherLocation(location: string): string | null {
+  const cleaned = location
+    .replace(/\b(today|right now|now|currently|outside)\b/gi, ' ')
+    .replace(/\s+(also|and also|plus|with)\b[\s\S]*$/i, ' ')
+    .replace(/\band\s+add\b[\s\S]*$/i, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  if (!cleaned || /^(here|outside|today|now|right now)$/i.test(cleaned)) return null
+  if (/^(nyc|new york city)$/i.test(cleaned)) return 'New York City'
+  if (/^(la)$/i.test(cleaned)) return 'Los Angeles'
+  return cleaned
 }
 
 function extractWeatherLocation(text: string): string | null {
@@ -391,7 +510,9 @@ function extractWeatherLocation(text: string): string | null {
     .replace(/\s+/g, ' ')
     .trim()
 
-  const explicit = cleaned.match(/\b(?:in|for|at|near)\s+(.+)$/i)
+  const explicit = cleaned.match(
+    /\b(?:weather|temperature|forecast|conditions|outside|it)?\s*(?:in|for|at|near)\s+(.+?)(?:\s+(?:today|right now|now|currently|also|and\s+add|please)\b|$)/i
+  )
   let location = explicit?.[1]?.trim()
 
   if (!location) {
@@ -402,15 +523,7 @@ function extractWeatherLocation(text: string): string | null {
       .trim()
   }
 
-  location = location
-    .replace(/\b(today|right now|now|currently|outside)\b/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-
-  if (!location || /^(here|outside|today|now|right now)$/i.test(location)) return null
-  if (/^(nyc|new york city)$/i.test(location)) return 'New York City'
-  if (/^(la)$/i.test(location)) return 'Los Angeles'
-  return location
+  return normalizeWeatherLocation(location)
 }
 
 function weatherDescription(code: number): string {
@@ -424,11 +537,352 @@ function weatherDescription(code: number): string {
   return 'mixed'
 }
 
+function nwsHeaders(): Record<string, string> {
+  return {
+    accept: 'application/geo+json',
+    'user-agent': 'AI Assistant desktop app (personal use)'
+  }
+}
+
+function celsiusToFahrenheit(value: number): number {
+  return (value * 9) / 5 + 32
+}
+
+function kmhToMph(value: number): number {
+  return value * 0.621371
+}
+
+function metersToInches(value: number): number {
+  return value * 39.3701
+}
+
+function numberValue(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function compassFromDegrees(value: number | null): string | null {
+  if (value === null) return null
+  const directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
+  return directions[Math.round(value / 45) % directions.length]
+}
+
+async function tryNwsObservationText(
+  pointData: { properties?: { observationStations?: string } },
+  place: string
+): Promise<string | null> {
+  const stationsUrl = pointData.properties?.observationStations
+  if (!stationsUrl) return null
+
+  const stationsRes = await fetch(stationsUrl, { headers: nwsHeaders() })
+  if (!stationsRes.ok) throw new Error(`NWS stations API ${stationsRes.status}`)
+  const stationsData = (await stationsRes.json()) as {
+    features?: {
+      id?: string
+      properties?: {
+        stationIdentifier?: string
+        name?: string
+      }
+    }[]
+  }
+
+  for (const station of stationsData.features?.slice(0, 4) ?? []) {
+    const stationUrl =
+      station.id ??
+      (station.properties?.stationIdentifier
+        ? `https://api.weather.gov/stations/${station.properties.stationIdentifier}`
+        : null)
+    if (!stationUrl) continue
+
+    try {
+      const observationRes = await fetch(`${stationUrl}/observations/latest`, {
+        headers: nwsHeaders()
+      })
+      if (!observationRes.ok) continue
+      const observationData = (await observationRes.json()) as {
+        properties?: {
+          textDescription?: string | null
+          temperature?: { value?: number | null }
+          relativeHumidity?: { value?: number | null }
+          windSpeed?: { value?: number | null }
+          windDirection?: { value?: number | null }
+          precipitationLastHour?: { value?: number | null }
+        }
+      }
+      const props = observationData.properties
+      const tempC = numberValue(props?.temperature?.value)
+      if (tempC === null) continue
+
+      const description = props?.textDescription?.trim().toLowerCase() || 'current'
+      const humidity = numberValue(props?.relativeHumidity?.value)
+      const windKmh = numberValue(props?.windSpeed?.value)
+      const windDirection = compassFromDegrees(numberValue(props?.windDirection?.value))
+      const precipMeters = numberValue(props?.precipitationLastHour?.value)
+      const stationName = station.properties?.name?.trim()
+      const humidityText = humidity !== null ? ` Humidity is ${Math.round(humidity)}%.` : ''
+      const windText =
+        windKmh !== null
+          ? ` Wind is ${Math.round(kmhToMph(windKmh))} mph${
+              windDirection ? ` ${windDirection}` : ''
+            }.`
+          : ''
+      const precipText =
+        precipMeters !== null && precipMeters > 0
+          ? ` Rainfall in the last hour is ${metersToInches(precipMeters).toFixed(2)} in.`
+          : ''
+      const stationText = stationName ? ` (${stationName})` : ''
+
+      return `The weather in ${place} is ${description} and ${Math.round(
+        celsiusToFahrenheit(tempC)
+      )}°F.${humidityText}${windText}${precipText}\n\nSource: National Weather Service latest observation${stationText}.`
+    } catch (err) {
+      db.addLog('system', `NWS station observation failed: ${(err as Error).message}`)
+    }
+  }
+
+  return null
+}
+
+async function tryNwsWeatherText(
+  latitude: number,
+  longitude: number,
+  place: string
+): Promise<string> {
+  const pointRes = await fetch(
+    `https://api.weather.gov/points/${latitude.toFixed(4)},${longitude.toFixed(4)}`,
+    { headers: nwsHeaders() }
+  )
+  if (!pointRes.ok) throw new Error(`NWS points API ${pointRes.status}`)
+  const pointData = (await pointRes.json()) as {
+    properties?: {
+      observationStations?: string
+      forecastHourly?: string
+    }
+  }
+  const observationText = await tryNwsObservationText(pointData, place)
+  if (observationText) return observationText
+
+  const hourlyUrl = pointData.properties?.forecastHourly
+  if (!hourlyUrl) throw new Error('NWS hourly forecast URL missing')
+
+  const hourlyRes = await fetch(hourlyUrl, { headers: nwsHeaders() })
+  if (!hourlyRes.ok) throw new Error(`NWS hourly forecast ${hourlyRes.status}`)
+  const hourlyData = (await hourlyRes.json()) as {
+    properties?: {
+      periods?: {
+        temperature?: number
+        temperatureUnit?: string
+        shortForecast?: string
+        windSpeed?: string
+        windDirection?: string
+        relativeHumidity?: { value?: number | null }
+        probabilityOfPrecipitation?: { value?: number | null }
+      }[]
+    }
+  }
+  const current = hourlyData.properties?.periods?.[0]
+  if (!current || typeof current.temperature !== 'number') {
+    throw new Error('NWS hourly forecast data missing')
+  }
+
+  const condition = current.shortForecast ? `${current.shortForecast.toLowerCase()} and ` : ''
+  const unit = current.temperatureUnit ?? 'F'
+  const humidity =
+    typeof current.relativeHumidity?.value === 'number'
+      ? ` Humidity is ${Math.round(current.relativeHumidity.value)}%.`
+      : ''
+  const precip =
+    typeof current.probabilityOfPrecipitation?.value === 'number'
+      ? ` Chance of precipitation is ${Math.round(current.probabilityOfPrecipitation.value)}%.`
+      : ''
+  const wind =
+    current.windSpeed || current.windDirection
+      ? ` Wind is ${[current.windDirection, current.windSpeed].filter(Boolean).join(' ')}.`
+      : ''
+
+  return `The weather in ${place} is ${condition}${Math.round(
+    current.temperature
+  )}°${unit}.${humidity}${wind}${precip}\n\nSource: National Weather Service hourly forecast.`
+}
+
+interface WeatherGeoMatch {
+  name: string
+  admin1?: string
+  country?: string
+  country_code?: string
+  latitude: number
+  longitude: number
+}
+
+function weatherPlace(match: WeatherGeoMatch): string {
+  return [match.name, match.admin1, match.country].filter(Boolean).join(', ')
+}
+
+async function geocodeWeatherLocation(location: string): Promise<WeatherGeoMatch | null> {
+  const geoUrl =
+    'https://geocoding-api.open-meteo.com/v1/search?' +
+    new URLSearchParams({
+      name: location,
+      count: '1',
+      language: 'en',
+      format: 'json'
+    }).toString()
+  const geoRes = await fetch(geoUrl)
+  if (!geoRes.ok) throw new Error(`Geocoding API ${geoRes.status}`)
+  const geoData = (await geoRes.json()) as {
+    results?: WeatherGeoMatch[]
+  }
+  return geoData.results?.[0] ?? null
+}
+
+async function openMeteoWeatherText(match: WeatherGeoMatch): Promise<string> {
+  const weatherUrl =
+    'https://api.open-meteo.com/v1/forecast?' +
+    new URLSearchParams({
+      latitude: String(match.latitude),
+      longitude: String(match.longitude),
+      current:
+        'temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m',
+      temperature_unit: 'fahrenheit',
+      wind_speed_unit: 'mph',
+      precipitation_unit: 'inch',
+      timezone: 'auto'
+    }).toString()
+  const weatherRes = await fetch(weatherUrl)
+  if (!weatherRes.ok) throw new Error(`Weather API ${weatherRes.status}`)
+  const weatherData = (await weatherRes.json()) as {
+    current?: {
+      temperature_2m?: number
+      apparent_temperature?: number
+      relative_humidity_2m?: number
+      precipitation?: number
+      weather_code?: number
+      wind_speed_10m?: number
+    }
+  }
+  const current = weatherData.current
+  if (!current || typeof current.temperature_2m !== 'number') {
+    throw new Error('Missing current weather data')
+  }
+
+  const description =
+    typeof current.weather_code === 'number' ? weatherDescription(current.weather_code) : 'current'
+  const feels =
+    typeof current.apparent_temperature === 'number'
+      ? `, feels like ${Math.round(current.apparent_temperature)}°F`
+      : ''
+  const humidity =
+    typeof current.relative_humidity_2m === 'number'
+      ? ` Humidity is ${Math.round(current.relative_humidity_2m)}%.`
+      : ''
+  const wind =
+    typeof current.wind_speed_10m === 'number'
+      ? ` Wind is ${Math.round(current.wind_speed_10m)} mph.`
+      : ''
+  const precip =
+    typeof current.precipitation === 'number' && current.precipitation > 0
+      ? ` Precipitation is ${current.precipitation.toFixed(2)} in.`
+      : ''
+
+  return `The weather in ${weatherPlace(match)} is ${description} and ${Math.round(
+    current.temperature_2m
+  )}°F${feels}.${humidity}${wind}${precip}\n\nSource: Open-Meteo current conditions.`
+}
+
+async function lookupWeatherText(location: string): Promise<string | null> {
+  const match = await geocodeWeatherLocation(location)
+  if (!match) return null
+
+  const place = weatherPlace(match)
+  if (match.country_code === 'US' || match.country === 'United States') {
+    try {
+      return await tryNwsWeatherText(match.latitude, match.longitude, place)
+    } catch (err) {
+      db.addLog('system', `NWS weather lookup failed: ${(err as Error).message}`)
+    }
+  }
+
+  return openMeteoWeatherText(match)
+}
+
+function requestedSignature(text: string): string | null {
+  const match = text.match(/\bsignature\s+(?:which\s+would\s+be|as|is|:)?\s+([\s\S]+)$/i)
+  const signature = match?.[1]?.trim()
+  return signature || null
+}
+
+function fallbackWeatherEmailBody(text: string, location: string, weatherText: string): string {
+  const signature = requestedSignature(text) ?? 'Best regards,\n[my name]'
+  return `Hi,\n\nI wanted to send a quick note about the weather in ${location}. ${weatherText.replace(
+    /\n\nSource:[\s\S]+$/i,
+    ''
+  )}\n\n${signature}`
+}
+
+async function tryWeatherEmailDraftNow(
+  text: string,
+  userMessage: Message
+): Promise<AssistantResult | null> {
+  if (!isEmailDraftLikeRequest(text) || !isWeatherRequest(text)) return null
+
+  const location = extractWeatherLocation(text)
+  if (!location) return null
+
+  try {
+    const weatherText = await lookupWeatherText(location)
+    if (!weatherText) {
+      return addBasicAssistantMessage(
+        userMessage,
+        `I couldn't find a weather location for "${location}".`
+      )
+    }
+
+    try {
+      const res = await runAssistant(
+        `${text.trim()}\n\nCurrent weather context to use in the draft:\n${weatherText}\n\nDraft only the email or message requested. Do not create tasks, reminders, or app actions.`
+      )
+      const intent = res.intent === 'generate_email' && res.email ? 'generate_email' : 'general_chat'
+      const responseText =
+        res.intent === 'generate_email' && res.email
+          ? `${res.response.trim()}\n\n${formatEmailDraft(res.email)}`
+          : res.response
+      const assistantMessage = db.addMessage('assistant', responseText, intent)
+      return {
+        userMessage,
+        assistantMessage,
+        intent,
+        email: res.email
+      }
+    } catch (err) {
+      db.addLog('system', `Weather email model draft failed: ${(err as Error).message}`)
+      const email = {
+        body: fallbackWeatherEmailBody(text, location, weatherText)
+      }
+      const assistantMessage = db.addMessage(
+        'assistant',
+        `Here is a draft you can copy and paste.\n\n${formatEmailDraft(email)}`,
+        'generate_email'
+      )
+      return {
+        userMessage,
+        assistantMessage,
+        intent: 'generate_email',
+        email
+      }
+    }
+  } catch (err) {
+    db.addLog('system', `Weather email lookup failed: ${(err as Error).message}`)
+    return addBasicAssistantMessage(
+      userMessage,
+      `I couldn't retrieve the current weather for ${location} right now.`
+    )
+  }
+}
+
 async function tryWeatherNow(
   text: string,
   userMessage: Message
 ): Promise<AssistantResult | null> {
-  if (!isWeatherRequest(text)) return null
+  if (!isWeatherRequest(text) || isEmailDraftLikeRequest(text)) return null
 
   const location = extractWeatherLocation(text)
   if (!location) {
@@ -439,88 +893,14 @@ async function tryWeatherNow(
   }
 
   try {
-    const geoUrl =
-      'https://geocoding-api.open-meteo.com/v1/search?' +
-      new URLSearchParams({
-        name: location,
-        count: '1',
-        language: 'en',
-        format: 'json'
-      }).toString()
-    const geoRes = await fetch(geoUrl)
-    if (!geoRes.ok) throw new Error(`Geocoding API ${geoRes.status}`)
-    const geoData = (await geoRes.json()) as {
-      results?: {
-        name: string
-        admin1?: string
-        country?: string
-        latitude: number
-        longitude: number
-      }[]
-    }
-    const match = geoData.results?.[0]
-    if (!match) {
+    const weatherText = await lookupWeatherText(location)
+    if (!weatherText) {
       return addBasicAssistantMessage(
         userMessage,
         `I couldn't find a weather location for "${location}".`
       )
     }
-
-    const weatherUrl =
-      'https://api.open-meteo.com/v1/forecast?' +
-      new URLSearchParams({
-        latitude: String(match.latitude),
-        longitude: String(match.longitude),
-        current:
-          'temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m',
-        temperature_unit: 'fahrenheit',
-        wind_speed_unit: 'mph',
-        precipitation_unit: 'inch',
-        timezone: 'auto'
-      }).toString()
-    const weatherRes = await fetch(weatherUrl)
-    if (!weatherRes.ok) throw new Error(`Weather API ${weatherRes.status}`)
-    const weatherData = (await weatherRes.json()) as {
-      current?: {
-        temperature_2m?: number
-        apparent_temperature?: number
-        relative_humidity_2m?: number
-        precipitation?: number
-        weather_code?: number
-        wind_speed_10m?: number
-      }
-    }
-    const current = weatherData.current
-    if (!current || typeof current.temperature_2m !== 'number') {
-      throw new Error('Missing current weather data')
-    }
-
-    const place = [match.name, match.admin1, match.country].filter(Boolean).join(', ')
-    const description =
-      typeof current.weather_code === 'number' ? weatherDescription(current.weather_code) : 'current'
-    const feels =
-      typeof current.apparent_temperature === 'number'
-        ? `, feels like ${Math.round(current.apparent_temperature)}°F`
-        : ''
-    const humidity =
-      typeof current.relative_humidity_2m === 'number'
-        ? ` Humidity is ${Math.round(current.relative_humidity_2m)}%.`
-        : ''
-    const wind =
-      typeof current.wind_speed_10m === 'number'
-        ? ` Wind is ${Math.round(current.wind_speed_10m)} mph.`
-        : ''
-    const precip =
-      typeof current.precipitation === 'number' && current.precipitation > 0
-        ? ` Precipitation is ${current.precipitation.toFixed(2)} in.`
-        : ''
-
-    return addBasicAssistantMessage(
-      userMessage,
-      `The weather in ${place} is ${description} and ${Math.round(
-        current.temperature_2m
-      )}°F${feels}.${humidity}${wind}${precip}`
-    )
+    return addBasicAssistantMessage(userMessage, weatherText)
   } catch (err) {
     db.addLog('system', `Weather lookup failed: ${(err as Error).message}`)
     return addBasicAssistantMessage(
@@ -540,6 +920,43 @@ interface MarketMover {
   changePercent: number | null
 }
 
+interface StockQuote {
+  symbol: string
+  name: string
+  price: number | null
+  currency: string
+  change: number | null
+  changePercent: number | null
+  marketState: string | null
+  exchange: string | null
+  source: string
+}
+
+const COMPANY_TICKERS: Record<string, string> = {
+  meta: 'META',
+  facebook: 'META',
+  apple: 'AAPL',
+  microsoft: 'MSFT',
+  google: 'GOOGL',
+  alphabet: 'GOOGL',
+  amazon: 'AMZN',
+  tesla: 'TSLA',
+  nvidia: 'NVDA',
+  netflix: 'NFLX',
+  amd: 'AMD',
+  intel: 'INTC',
+  paypal: 'PYPL',
+  salesforce: 'CRM',
+  oracle: 'ORCL',
+  walmart: 'WMT',
+  disney: 'DIS',
+  boeing: 'BA',
+  nike: 'NKE',
+  spotify: 'SPOT',
+  coinbase: 'COIN',
+  robinhood: 'HOOD'
+}
+
 function isMarketMoversRequest(text: string): boolean {
   const lower = text.toLowerCase()
   const hasMarketTerm = /\b(stock|stocks|market|markets|equity|equities|ticker|tickers)\b/.test(
@@ -556,6 +973,15 @@ function isMarketMoversRequest(text: string): boolean {
   )
 }
 
+function isStockQuoteRequest(text: string): boolean {
+  const lower = text.toLowerCase()
+  if (isMarketMoversRequest(text)) return false
+  return (
+    /\b(stock|stocks|share|shares|ticker|quote|market cap|finance|yahoo finance)\b/.test(lower) &&
+    /\b(price|worth|trading|quote|check|current|right now|today|api)\b/.test(lower)
+  )
+}
+
 function wantsOnlyGainers(text: string): boolean {
   const lower = text.toLowerCase()
   return /\b(gainer|gainers|up|winner|winners|best)\b/.test(lower) && !wantsOnlyLosers(text)
@@ -568,6 +994,281 @@ function wantsOnlyLosers(text: string): boolean {
 
 function readNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function directTickerFromText(text: string): string | null {
+  const cashTicker = text.match(/\$([A-Z]{1,6})(?:\b|$)/)
+  if (cashTicker?.[1]) return cashTicker[1]
+
+  const lower = text.toLowerCase()
+  for (const [name, symbol] of Object.entries(COMPANY_TICKERS)) {
+    if (new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(lower)) {
+      return symbol
+    }
+  }
+
+  const explicitTicker = text.match(/\b(?:ticker|symbol|stock)\s+([A-Z]{1,6})\b/)
+  if (explicitTicker?.[1]) return explicitTicker[1]
+
+  const allCaps = text.match(/\b[A-Z]{2,5}\b/g) ?? []
+  const ignored = new Set(['API', 'USD', 'NYSE', 'NASDAQ', 'ETF'])
+  return allCaps.find((candidate) => !ignored.has(candidate)) ?? null
+}
+
+function stockSearchTermFromText(text: string): string | null {
+  const cleaned = text
+    .replace(/\$[A-Z]{1,6}\b/g, ' ')
+    .replace(/\b(what'?s|what is|can you|could you|please|yes|check|for me|use|using)\b/gi, ' ')
+    .replace(/\b(the|a|an|current|right now|today|latest|live|real time|real-time)\b/gi, ' ')
+    .replace(/\b(stock|stocks|share|shares|ticker|quote|price|worth|trading|finance|yahoo|api|information)\b/gi, ' ')
+    .replace(/[?.!,']/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return cleaned.length >= 2 ? cleaned : null
+}
+
+function latestStockTickerFromHistory(currentMessageId: number): string | null {
+  const messages = db.listMessages(20)
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i]
+    if (message.id === currentMessageId) continue
+    if (message.role === 'assistant') {
+      const sourceQuote = message.content.match(/\b([A-Z]{1,6})\b[\s\S]*Source: Yahoo Finance/i)
+      if (sourceQuote?.[1]) return sourceQuote[1]
+      continue
+    }
+    if (message.role === 'user' && isStockQuoteRequest(message.content)) {
+      const symbol = directTickerFromText(message.content)
+      if (symbol) return symbol
+    }
+  }
+  return null
+}
+
+function isStockQuoteFollowUp(text: string): boolean {
+  return /\b(yes|yeah|yep|sure|ok|okay|check|check it|check for me|use yahoo|yahoo finance|use the api|api)\b/i.test(
+    text
+  )
+}
+
+async function resolveStockSymbol(text: string, userMessage: Message): Promise<string | null> {
+  const direct = directTickerFromText(text)
+  if (direct) return direct
+
+  if (isStockQuoteFollowUp(text)) {
+    const previous = latestStockTickerFromHistory(userMessage.id)
+    if (previous) return previous
+  }
+
+  const searchTerm = stockSearchTermFromText(text)
+  if (!searchTerm) return null
+
+  const searchUrl =
+    'https://query2.finance.yahoo.com/v1/finance/search?' +
+    new URLSearchParams({
+      q: searchTerm,
+      quotesCount: '1',
+      newsCount: '0'
+    }).toString()
+  const searchRes = await fetch(searchUrl, {
+    headers: {
+      'user-agent': 'AI Assistant desktop app'
+    }
+  })
+  if (!searchRes.ok) throw new Error(`Yahoo Finance search failed with ${searchRes.status}`)
+  const data = (await searchRes.json()) as {
+    quotes?: {
+      symbol?: unknown
+      quoteType?: unknown
+      typeDisp?: unknown
+    }[]
+  }
+  const quote = data.quotes?.find((item) => {
+    const quoteType = typeof item.quoteType === 'string' ? item.quoteType.toLowerCase() : ''
+    const typeDisp = typeof item.typeDisp === 'string' ? item.typeDisp.toLowerCase() : ''
+    return quoteType === 'equity' || typeDisp === 'equity'
+  })
+  return typeof quote?.symbol === 'string' ? quote.symbol.trim().toUpperCase() : null
+}
+
+async function fetchYahooQuoteApiStockQuote(symbol: string): Promise<StockQuote | null> {
+  const url =
+    'https://query1.finance.yahoo.com/v7/finance/quote?' +
+    new URLSearchParams({
+      symbols: symbol
+    }).toString()
+  const res = await fetch(url, {
+    headers: {
+      'user-agent': 'AI Assistant desktop app'
+    }
+  })
+  if (!res.ok) throw new Error(`Yahoo Finance quote failed with ${res.status}`)
+  const data = (await res.json()) as {
+    quoteResponse?: {
+      result?: {
+        symbol?: unknown
+        shortName?: unknown
+        longName?: unknown
+        displayName?: unknown
+        regularMarketPrice?: unknown
+        regularMarketChange?: unknown
+        regularMarketChangePercent?: unknown
+        currency?: unknown
+        marketState?: unknown
+        fullExchangeName?: unknown
+      }[]
+    }
+  }
+  const quote = data.quoteResponse?.result?.[0]
+  if (!quote) return null
+
+  const resolvedSymbol = typeof quote.symbol === 'string' ? quote.symbol.trim() : symbol
+  const fallbackName =
+    typeof quote.shortName === 'string'
+      ? quote.shortName
+      : typeof quote.longName === 'string'
+        ? quote.longName
+        : typeof quote.displayName === 'string'
+          ? quote.displayName
+          : resolvedSymbol
+
+  return {
+    symbol: resolvedSymbol,
+    name: fallbackName.trim(),
+    price: readNumber(quote.regularMarketPrice),
+    currency: typeof quote.currency === 'string' ? quote.currency : 'USD',
+    change: readNumber(quote.regularMarketChange),
+    changePercent: readNumber(quote.regularMarketChangePercent),
+    marketState: typeof quote.marketState === 'string' ? quote.marketState : null,
+    exchange: typeof quote.fullExchangeName === 'string' ? quote.fullExchangeName : null,
+    source: 'Yahoo Finance quote API'
+  }
+}
+
+async function fetchYahooChartStockQuote(symbol: string): Promise<StockQuote | null> {
+  const url =
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?` +
+    new URLSearchParams({
+      range: '1d',
+      interval: '1m'
+    }).toString()
+  const res = await fetch(url, {
+    headers: {
+      'user-agent': 'AI Assistant desktop app'
+    }
+  })
+  if (!res.ok) throw new Error(`Yahoo Finance chart failed with ${res.status}`)
+  const data = (await res.json()) as {
+    chart?: {
+      result?: {
+        meta?: {
+          symbol?: unknown
+          shortName?: unknown
+          longName?: unknown
+          regularMarketPrice?: unknown
+          previousClose?: unknown
+          chartPreviousClose?: unknown
+          currency?: unknown
+          fullExchangeName?: unknown
+          exchangeName?: unknown
+        }
+      }[]
+    }
+  }
+  const meta = data.chart?.result?.[0]?.meta
+  if (!meta) return null
+
+  const price = readNumber(meta.regularMarketPrice)
+  const previousClose = readNumber(meta.previousClose) ?? readNumber(meta.chartPreviousClose)
+  const change = price !== null && previousClose !== null ? price - previousClose : null
+  const changePercent =
+    change !== null && previousClose !== null && previousClose !== 0
+      ? (change / previousClose) * 100
+      : null
+  const resolvedSymbol = typeof meta.symbol === 'string' ? meta.symbol.trim() : symbol
+  const name =
+    typeof meta.shortName === 'string'
+      ? meta.shortName
+      : typeof meta.longName === 'string'
+        ? meta.longName
+        : resolvedSymbol
+  const exchange =
+    typeof meta.fullExchangeName === 'string'
+      ? meta.fullExchangeName
+      : typeof meta.exchangeName === 'string'
+        ? meta.exchangeName
+        : null
+
+  return {
+    symbol: resolvedSymbol,
+    name: name.trim(),
+    price,
+    currency: typeof meta.currency === 'string' ? meta.currency : 'USD',
+    change,
+    changePercent,
+    marketState: null,
+    exchange,
+    source: 'Yahoo Finance chart API'
+  }
+}
+
+async function fetchStockQuote(symbol: string): Promise<StockQuote | null> {
+  try {
+    const quote = await fetchYahooQuoteApiStockQuote(symbol)
+    if (quote) return quote
+  } catch (err) {
+    db.addLog('system', `Yahoo quote endpoint failed: ${(err as Error).message}`)
+  }
+
+  return fetchYahooChartStockQuote(symbol)
+}
+
+function formatStockQuote(quote: StockQuote): string {
+  const price = quote.price === null ? 'not currently available' : `${quote.currency} ${quote.price.toFixed(2)}`
+  const change =
+    quote.change === null
+      ? ''
+      : `, ${quote.change >= 0 ? '+' : ''}${quote.change.toFixed(2)}`
+  const changePercent =
+    quote.changePercent === null
+      ? ''
+      : ` (${quote.changePercent >= 0 ? '+' : ''}${quote.changePercent.toFixed(2)}%)`
+  const exchange = quote.exchange ? ` on ${quote.exchange}` : ''
+  const marketState = quote.marketState ? ` Market state: ${quote.marketState}.` : ''
+  return `${quote.symbol} (${quote.name}) is trading at ${price}${change}${changePercent}${exchange}.${marketState}\n\nSource: ${quote.source}. This is informational only, not financial advice.`
+}
+
+async function tryStockQuoteNow(
+  text: string,
+  userMessage: Message
+): Promise<AssistantResult | null> {
+  if (!isStockQuoteRequest(text) && !isStockQuoteFollowUp(text)) return null
+
+  try {
+    const symbol = await resolveStockSymbol(text, userMessage)
+    if (!symbol) {
+      return addBasicAssistantMessage(
+        userMessage,
+        'Which stock ticker or company should I check?'
+      )
+    }
+
+    const quote = await fetchStockQuote(symbol)
+    if (!quote) {
+      return addBasicAssistantMessage(
+        userMessage,
+        `I couldn't find a Yahoo Finance quote for "${symbol}".`
+      )
+    }
+
+    return addBasicAssistantMessage(userMessage, formatStockQuote(quote))
+  } catch (err) {
+    db.addLog('system', `Stock quote lookup failed: ${(err as Error).message}`)
+    return addBasicAssistantMessage(
+      userMessage,
+      "I couldn't retrieve that stock quote from Yahoo Finance right now. Please try again in a moment."
+    )
+  }
 }
 
 async function fetchMarketMovers(screenerId: YahooScreenerId): Promise<MarketMover[]> {
@@ -688,6 +1389,195 @@ function isSummarizeTextRequest(text: string): boolean {
   return !/\b(plan|plans|today|daily)\b/.test(lower)
 }
 
+function isRewriteTextRequest(text: string): boolean {
+  const lower = text.toLowerCase()
+  return (
+    /\b(rewrite|reword|paraphrase|revise|polish|clean up|improve)\b/.test(lower) ||
+    /\b(make this|make it)\s+sound\b/.test(lower) ||
+    /\b(grammar check|fix grammar|fix the grammar)\b/.test(lower)
+  )
+}
+
+function stripWrappingQuotes(text: string): string {
+  let body = text.trim()
+  const quotePairs: [string, string][] = [
+    ['"', '"'],
+    ["'", "'"],
+    ['“', '”'],
+    ['‘', '’']
+  ]
+  for (const [open, close] of quotePairs) {
+    if (body.startsWith(open) && body.endsWith(close)) {
+      body = body.slice(open.length, -close.length).trim()
+      break
+    }
+  }
+  return body
+}
+
+function extractTextToRewrite(text: string): string | null {
+  const trimmed = text.trim()
+  const quoted =
+    trimmed.match(/[“"]([\s\S]{20,})[”"]\s*$/)?.[1]?.trim() ??
+    trimmed.match(/[‘']([\s\S]{20,})[’']\s*$/)?.[1]?.trim()
+  if (quoted) return quoted
+
+  const colon = trimmed.match(
+    /\b(?:rewrite|reword|paraphrase|revise|polish|clean up|improve|grammar check|fix grammar|fix the grammar)\b[^:]*:\s*([\s\S]+)/i
+  )
+  const colonBody = colon?.[1] ? stripWrappingQuotes(colon[1]) : ''
+  if (colonBody.length >= 10) return colonBody
+
+  const body = trimmed
+    .replace(/^\s*(please\s+)?(?:can you\s+|could you\s+)?(?:rewrite|reword|paraphrase|revise|polish|clean up|improve)\s*/i, '')
+    .replace(/^(this|the following|this text|this paragraph|this passage)\s*/i, '')
+    .trim()
+  const stripped = stripWrappingQuotes(body)
+  if (!stripped || /^(this|it|this text|this paragraph|the text)$/i.test(stripped)) return null
+  return stripped.length >= 20 ? stripped : null
+}
+
+async function tryRewriteTextNow(
+  text: string,
+  userMessage: Message
+): Promise<AssistantResult | null> {
+  if (!isRewriteTextRequest(text)) return null
+
+  const textToRewrite = extractTextToRewrite(text)
+  if (!textToRewrite) {
+    return addBasicAssistantMessage(
+      userMessage,
+      'Paste the text you want rewritten, like: "rewrite this: ..."'
+    )
+  }
+
+  try {
+    const rewritten = await rewriteText(textToRewrite, text)
+    return addBasicAssistantMessage(userMessage, rewritten || 'I could not rewrite that text.')
+  } catch (err) {
+    db.addLog('system', `Rewrite text failed: ${(err as Error).message}`)
+    return addBasicAssistantMessage(
+      userMessage,
+      "I couldn't rewrite that text right now. Please try again in a moment."
+    )
+  }
+}
+
+function isWritingStyleRestyleRequest(text: string): boolean {
+  const lower = text.toLowerCase()
+  const mentionsStyle =
+    /\b(style|writing style|my style|my tone|my voice|sound like me|sounds like me|different style)\b/.test(
+      lower
+    )
+  if (!mentionsStyle) return false
+
+  return (
+    /\b(rewrite|reword|revise|polish|redo|regenerate|generate|make|change|convert|apply)\b/.test(
+      lower
+    ) ||
+    /\b(same|previous|last|that|this|it|response|draft|email|message)\b/.test(lower)
+  )
+}
+
+function latestAssistantMessage(currentMessageId: number): Message | null {
+  const messages = db.listMessages(30)
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i]
+    if (message.id === currentMessageId) continue
+    if (message.role === 'assistant') return message
+  }
+  return null
+}
+
+function emailDraftFromAssistantMessage(message: Message): {
+  to?: string
+  subject?: string
+  body: string
+} | null {
+  const draftStart = message.content.match(/(?:^|\n)Draft email:\s*/i)
+  if (!draftStart && message.intent !== 'generate_email') return null
+
+  const rawDraft = draftStart
+    ? message.content.slice((draftStart.index ?? 0) + draftStart[0].length)
+    : message.content
+  const to = rawDraft.match(/^\s*To:\s*(.+)$/im)?.[1]?.trim()
+  const subject = rawDraft.match(/^\s*Subject:\s*(.+)$/im)?.[1]?.trim()
+  const body = cleanEmailBodyForDisplay(
+    rawDraft
+      .split('\n')
+      .filter((line) => !/^\s*(To|Subject):\s*/i.test(line))
+      .join('\n')
+  )
+
+  return body ? { to, subject, body } : null
+}
+
+function extractTextToRestyle(text: string, userMessage: Message): {
+  text: string
+  email?: {
+    to?: string
+    subject?: string
+    body: string
+  }
+} | null {
+  const explicitText = extractTextToRewrite(text)
+  if (explicitText) return { text: explicitText }
+
+  const previous = latestAssistantMessage(userMessage.id)
+  if (!previous) return null
+
+  const email = emailDraftFromAssistantMessage(previous)
+  if (email) return { text: email.body, email }
+
+  const content = cleanEmailBodyForDisplay(previous.content)
+  return content ? { text: content } : null
+}
+
+async function tryApplyWritingStyleNow(
+  text: string,
+  userMessage: Message
+): Promise<AssistantResult | null> {
+  if (!isWritingStyleRestyleRequest(text)) return null
+
+  const target = extractTextToRestyle(text, userMessage)
+  if (!target) {
+    return addBasicAssistantMessage(
+      userMessage,
+      'Paste the text you want restyled, or ask me to restyle the previous response.'
+    )
+  }
+
+  try {
+    const styled = await applyWritingStyleToText(target.text, text)
+    if (target.email) {
+      const email = {
+        ...target.email,
+        body: styled
+      }
+      const assistantMessage = db.addMessage(
+        'assistant',
+        `Here is a draft you can copy and paste.\n\n${formatEmailDraft(email)}`,
+        'generate_email'
+      )
+      return {
+        userMessage,
+        assistantMessage,
+        intent: 'generate_email',
+        email
+      }
+    }
+
+    return addBasicAssistantMessage(userMessage, styled || 'I could not apply that style.')
+  } catch (err) {
+    const message =
+      err instanceof AssistantError && /writing style profile/i.test(err.message)
+        ? 'Build a writing style profile first, then ask me to restyle the response.'
+        : "I couldn't apply the writing style right now. Please try again in a moment."
+    db.addLog('system', `Apply writing style failed: ${(err as Error).message}`)
+    return addBasicAssistantMessage(userMessage, message)
+  }
+}
+
 function extractTextToSummarize(text: string): string | null {
   const trimmed = text.trim()
   const colon = trimmed.match(/\b(?:summarize|summarise|sum up|tl;dr|tldr)\b[^:]*:\s*([\s\S]+)/i)
@@ -776,6 +1666,7 @@ async function trySummarizeTextNow(
 
 function isCallRequest(text: string): boolean {
   const lower = text.toLowerCase()
+  if (isReminderRequest(text)) return false
   if (/\b(open|launch|start|close|quit|exit|shut)\b/.test(lower)) return false
   return /\b(call|phone|facetime|face time)\b/.test(lower)
 }
@@ -872,8 +1763,50 @@ function parseTimeOnlyUpdate(text: string, baseIso: string): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toISOString()
 }
 
+function cleanIntentTitleFragment(value: string): string {
+  return value
+    .replace(/[.!?]\s*(the|this|it)\s+[\s\S]*$/i, '')
+    .replace(/[.!?]\s*(this|it)\s+(should|needs?|has to|must)\s+have\s+(a\s+)?(due\s+date|deadline)\b[\s\S]*$/i, '')
+    .replace(/\bin\s+\d+\s*(second|seconds|sec|secs|minute|minutes|min|hour|hours|hr|hrs|day|days)\b/gi, '')
+    .replace(/\b(?:on\s+)?\d{1,2}\/\d{1,2}\/\d{2,4}(?:\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/gi, '')
+    .replace(/\btomorrow(?:\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/gi, '')
+    .replace(/\b(due\s+date|deadline)\s+(is|for|on|at|of)?\b/gi, ' ')
+    .replace(/\s+(as|like)\s+(a\s+)?(task|todo|to-do|reminder)\b/gi, '')
+    .replace(/\s+(for me|for myself)\b/gi, '')
+    .replace(/\b(as well|also|too)\b/gi, ' ')
+    .replace(/^(a|an|the)\s+/i, '')
+    .replace(/[?.!,]\s*$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function titleAfterIntentKeyword(text: string, kind: 'task' | 'reminder' | 'either'): string | null {
+  const target =
+    kind === 'task'
+      ? '(?:task|todo|to-do)'
+      : kind === 'reminder'
+        ? 'reminder'
+        : '(?:task|todo|to-do|reminder)(?:\\s+and\\s+(?:task|todo|to-do|reminder))?'
+  const patterns = [
+    new RegExp(`\\b${target}\\s+(?:for\\s+me\\s+)?(?:to|for|about|called|named)\\s+([\\s\\S]+)$`, 'i'),
+    new RegExp(`\\b(?:set|create|add|make)\\s+(?:a\\s+)?(?:new\\s+)?${target}\\s+(?:for\\s+me\\s+)?(?:to|for|about|called|named)\\s+([\\s\\S]+)$`, 'i')
+  ]
+
+  if (kind === 'reminder' || kind === 'either') {
+    patterns.unshift(/\bremind\s+me\s+(?:to|for|about)\s+([\s\S]+)$/i)
+  }
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern)
+    const title = match?.[1] ? cleanIntentTitleFragment(match[1]) : ''
+    if (title) return title
+  }
+
+  return null
+}
+
 function cleanTaskTitle(text: string): string {
-  let title = text
+  let title = titleAfterIntentKeyword(text, 'task') ?? titleAfterIntentKeyword(text, 'either') ?? text
     .replace(/^\s*(hi|hey|hello)[,!]?\s+/i, '')
     .replace(/^(can you|could you|please|for me)\s+/i, '')
     .replace(/[.!?]\s*(this|it)\s+(should|needs?|has to|must)\s+have\s+(a\s+)?(due\s+date|deadline)\b[\s\S]*$/i, '')
@@ -913,6 +1846,75 @@ function isTaskRequest(text: string): boolean {
   )
 }
 
+function isFollowUpEmailTaskRequest(text: string): boolean {
+  return (
+    /\b(add|create|make|set)\b[\s\S]*\b(this|that|it|action|email|draft)\b[\s\S]*\b(task|todo|to-do)\b/i.test(
+      text
+    ) ||
+    /\b(add|create|make|set)\b[\s\S]*\b(task|todo|to-do)\b[\s\S]*\b(for|from)\b[\s\S]*\b(this|that|email|draft)\b/i.test(
+      text
+    )
+  )
+}
+
+function latestEmailDraftMessage(): Message | null {
+  const messages = db.listMessages(30)
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i]
+    if (message.role === 'assistant' && message.intent === 'generate_email') return message
+  }
+  return null
+}
+
+function emailTaskTitleFromDraft(content: string): string {
+  const to = content.match(/^\s*To:\s*(.+)$/im)?.[1]?.trim()
+  if (to) return `Send email to ${to}`
+
+  const bodyStart = content.match(/(?:^|\n)Draft email:\s*/i)
+  const rawBody = bodyStart ? content.slice((bodyStart.index ?? 0) + bodyStart[0].length) : content
+  const body = rawBody
+    .split('\n')
+    .filter((line) => !/^\s*(To|Subject):\s*/i.test(line))
+    .join('\n')
+    .trim()
+  const greeting = body.match(/^\s*(?:hi|hey|dear|hello)\s+([^,\n.!?]+)/i)?.[1]?.trim()
+  if (greeting && !/^(there|everyone|all)$/i.test(greeting)) {
+    return `Send email to ${greeting}`
+  }
+
+  const subject = content.match(/^\s*Subject:\s*(.+)$/im)?.[1]?.trim()
+  if (subject) return `Send email: ${subject}`
+  return 'Send last email draft'
+}
+
+function tryCreateFollowUpEmailTaskNow(text: string, userMessage: Message): AssistantResult | null {
+  if (!isFollowUpEmailTaskRequest(text)) return null
+
+  const draftMessage = latestEmailDraftMessage()
+  if (!draftMessage) return null
+
+  const title = emailTaskTitleFromDraft(draftMessage.content)
+  const due = parseDateFromTaskText(text)
+  db.addTask(title, due)
+  syncTaskToMacCalendar(title, due)
+  const dueText = due ? ` It is due ${new Date(due).toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  })}.` : ''
+  const assistantMessage = db.addMessage(
+    'assistant',
+    `Created task: ${title}.${dueText}`,
+    'create_task'
+  )
+  return {
+    userMessage,
+    assistantMessage,
+    intent: 'create_task'
+  }
+}
+
 function tryCreateTaskNow(text: string, userMessage: Message): AssistantResult | null {
   if (!isTaskRequest(text)) return null
   const title = cleanTaskTitle(text)
@@ -920,6 +1922,7 @@ function tryCreateTaskNow(text: string, userMessage: Message): AssistantResult |
 
   const due = parseDateFromTaskText(text)
   db.addTask(title, due)
+  syncTaskToMacCalendar(title, due)
   const dueText = due ? ` It is due ${new Date(due).toLocaleString([], {
     month: 'short',
     day: 'numeric',
@@ -969,6 +1972,8 @@ function tryCreateTaskAndReminderNow(text: string, userMessage: Message): Assist
 
   db.addTask(title, datetime)
   db.addReminder(title, datetime, 'none')
+  syncTaskToMacCalendar(title, datetime)
+  syncReminderToMac(title, datetime)
   const when = formatReminderTime(datetime)
   const assistantMessage = db.addMessage(
     'assistant',
@@ -1017,12 +2022,14 @@ function normalizedWords(value: string): string[] {
     .filter((word) => word.length > 1 && !['the', 'for', 'with'].includes(word))
 }
 
-function findTaskToDelete(title: string | null): { id: number; title: string } | null {
+function findTaskToDelete(
+  title: string | null
+): { id: number; title: string; due: string | null } | null {
   if (!title) return null
   const tasks = db.listTasks()
   const normalizedTitle = title.toLowerCase()
   const exact = tasks.find((t) => t.title.toLowerCase() === normalizedTitle)
-  if (exact) return { id: exact.id, title: exact.title }
+  if (exact) return { id: exact.id, title: exact.title, due: exact.due }
 
   const titleWords = normalizedWords(title)
   if (titleWords.length === 0) return null
@@ -1042,7 +2049,7 @@ function findTaskToDelete(title: string | null): { id: number; title: string } |
   if (scored.length > 1 && scored[0].score === scored[1].score) return null
 
   const best = scored[0]?.task
-  return best ? { id: best.id, title: best.title } : null
+  return best ? { id: best.id, title: best.title, due: best.due } : null
 }
 
 function previousTaskRemovalTitle(userMessage: Message): string | null {
@@ -1078,6 +2085,7 @@ function tryDeleteTaskNow(text: string, userMessage: Message): AssistantResult |
   }
 
   db.deleteTask(task.id)
+  removeTaskFromMacCalendar(task.title, task.due)
   const assistantMessage = db.addMessage(
     'assistant',
     `Deleted task: ${task.title}.`,
@@ -1237,7 +2245,9 @@ function tryUpdateLastScheduleNow(text: string, userMessage: Message): Assistant
   if (!updatedDate) return null
 
   if (target.kind === 'reminder') {
+    removeReminderFromMac(target.title, target.datetime)
     db.rescheduleReminder(target.id, updatedDate)
+    syncReminderToMac(target.title, updatedDate)
     const assistantMessage = db.addMessage(
       'assistant',
       `Updated reminder: ${target.title}. I’ll remind you ${formatReminderTime(updatedDate)}.`,
@@ -1250,7 +2260,9 @@ function tryUpdateLastScheduleNow(text: string, userMessage: Message): Assistant
     }
   }
 
+  removeTaskFromMacCalendar(target.title, target.due)
   db.updateTaskDue(target.id, updatedDate)
+  syncTaskToMacCalendar(target.title, updatedDate)
   const assistantMessage = db.addMessage(
     'assistant',
     `Updated task: ${target.title}. It is due ${formatReminderTime(updatedDate)}.`,
@@ -1264,14 +2276,17 @@ function tryUpdateLastScheduleNow(text: string, userMessage: Message): Assistant
 }
 
 function cleanReminderTitle(text: string): string {
-  return text
+  return (titleAfterIntentKeyword(text, 'reminder') ?? titleAfterIntentKeyword(text, 'either') ?? text)
     .replace(/^\s*(hi|hey|hello)[,!]?\s+/i, '')
+    .replace(/^\s*(can you|could you|please)\s+/i, '')
+    .replace(/[.!?]\s*(the|this|it)\s+[\s\S]*$/i, '')
     .replace(/\bin\s+\d+\s*(second|seconds|sec|secs|minute|minutes|min|hour|hours|hr|hrs|day|days)\b/gi, '')
     .replace(/\b(?:on\s+)?\d{1,2}\/\d{1,2}\/\d{2,4}(?:\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/gi, '')
     .replace(/\btomorrow(?:\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/gi, '')
     .replace(/^(please\s+)?(set|create|add|make)\s+(a\s+)?(new\s+)?reminder\s*/i, '')
     .replace(/^remind\s+me\s*/i, '')
-    .replace(/^(to|for|about)\s+/i, '')
+    .replace(/^(for me\s+)?(to|for|about)\s+/i, '')
+    .replace(/^me\s+to\s+/i, '')
     .replace(/^(a|an|the)\s+/i, '')
     .replace(/\b(as well|also|too)\b/gi, ' ')
     .replace(/\s+(for me|for myself)\b/gi, '')
@@ -1346,6 +2361,7 @@ function tryCompletePendingReminder(text: string, userMessage: Message): Assista
   }
 
   db.addReminder(title, datetime, 'none')
+  syncReminderToMac(title, datetime)
   const assistantMessage = db.addMessage(
     'assistant',
     `Reminder set: ${title}. I’ll remind you ${formatReminderTime(datetime)}.`,
@@ -1393,13 +2409,15 @@ function lastCreatedReminderTitle(userMessage: Message): string | null {
   return matches.at(-1) ?? null
 }
 
-function findActiveReminder(title: string | null): { id: number; title: string } | null {
+function findActiveReminder(
+  title: string | null
+): { id: number; title: string; datetime: string } | null {
   const reminders = db.listReminders()
   if (!title) return null
 
   const normalizedTitle = title.toLowerCase()
   const exact = reminders.find((r) => r.title.toLowerCase() === normalizedTitle)
-  if (exact) return { id: exact.id, title: exact.title }
+  if (exact) return { id: exact.id, title: exact.title, datetime: exact.datetime }
 
   const titleWords = normalizedWords(title)
   if (titleWords.length === 0) return null
@@ -1419,7 +2437,7 @@ function findActiveReminder(title: string | null): { id: number; title: string }
   if (scored.length > 1 && scored[0].score === scored[1].score) return null
 
   const best = scored[0]?.reminder
-  return best ? { id: best.id, title: best.title } : null
+  return best ? { id: best.id, title: best.title, datetime: best.datetime } : null
 }
 
 function previousReminderRemovalTitle(userMessage: Message): string | null {
@@ -1465,6 +2483,7 @@ function removeReminderByTitle(
   }
 
   db.dismissReminder(reminder.id)
+  removeReminderFromMac(reminder.title, reminder.datetime)
   const assistantMessage = db.addMessage(
     'assistant',
     `Removed reminder: ${reminder.title}.`,
@@ -1517,8 +2536,14 @@ function tryClearTasksAndRemindersNow(
   const tasks = shouldClearTasks ? db.listTasks() : []
   const reminders = shouldClearReminders ? db.listReminders() : []
 
-  for (const task of tasks) db.deleteTask(task.id)
-  for (const reminder of reminders) db.dismissReminder(reminder.id)
+  for (const task of tasks) {
+    db.deleteTask(task.id)
+    removeTaskFromMacCalendar(task.title, task.due)
+  }
+  for (const reminder of reminders) {
+    db.dismissReminder(reminder.id)
+    removeReminderFromMac(reminder.title, reminder.datetime)
+  }
 
   const parts: string[] = []
   if (shouldClearTasks) parts.push(`${tasks.length} task${tasks.length === 1 ? '' : 's'}`)
@@ -1563,6 +2588,7 @@ function tryCreateReminderNow(text: string, userMessage: Message): AssistantResu
   if (!title) title = 'Reminder'
 
   db.addReminder(title, datetime, 'none')
+  syncReminderToMac(title, datetime)
   const assistantMessage = db.addMessage(
     'assistant',
     `Reminder set: ${title}. I’ll remind you ${formatReminderTime(datetime)}.`,
@@ -1576,6 +2602,7 @@ function tryCreateReminderNow(text: string, userMessage: Message): AssistantResu
 }
 
 function tryOpenAppNow(text: string, userMessage: Message): AssistantResult | null {
+  if (isReminderRequest(text)) return null
   if (!hasImmediateOpenIntent(text)) return null
 
   const label = resolveApp(text)
@@ -1608,6 +2635,7 @@ function tryOpenAppNow(text: string, userMessage: Message): AssistantResult | nu
 }
 
 function tryCloseAppNow(text: string, userMessage: Message): AssistantResult | null {
+  if (isReminderRequest(text)) return null
   const lower = text.toLowerCase()
   if (!/\b(close|quit|exit|shut)\b/.test(lower)) return null
 
@@ -1641,6 +2669,7 @@ function tryCloseAppNow(text: string, userMessage: Message): AssistantResult | n
 }
 
 function tryBrowserSiteOpen(text: string, userMessage: Message): AssistantResult | null {
+  if (isReminderRequest(text)) return null
   if (!hasBrowserSiteIntent(text)) return null
 
   const result = openKnownSite(text)
@@ -1657,6 +2686,7 @@ function tryBrowserSiteOpen(text: string, userMessage: Message): AssistantResult
 }
 
 function tryBrowserSiteClose(text: string, userMessage: Message): AssistantResult | null {
+  if (isReminderRequest(text)) return null
   if (!hasBrowserSiteCloseIntent(text)) return null
 
   const result = closeKnownSite(text)
@@ -1673,6 +2703,7 @@ function tryBrowserSiteClose(text: string, userMessage: Message): AssistantResul
 }
 
 function tryScheduleBrowserSiteAction(text: string, userMessage: Message): AssistantResult | null {
+  if (isReminderRequest(text)) return null
   const datetime = parseRelativeDate(text)
   if (!datetime) return null
 
@@ -1703,6 +2734,7 @@ function tryScheduleBrowserSiteAction(text: string, userMessage: Message): Assis
 }
 
 function tryScheduleAppOpen(text: string, userMessage: Message): AssistantResult | null {
+  if (isReminderRequest(text)) return null
   const lower = text.toLowerCase()
   if (!/\b(open|launch|start)\b/.test(lower)) return null
 
@@ -1802,23 +2834,42 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('tasks:list', () => db.listTasks())
-  ipcMain.handle('tasks:toggle', (_e, id: unknown) =>
-    typeof id === 'number' ? db.toggleTask(id) : null
-  )
+  ipcMain.handle('tasks:toggle', (_e, id: unknown) => {
+    if (typeof id !== 'number') return null
+    const before = db.listTasks().find((task) => task.id === id) ?? null
+    const after = db.toggleTask(id)
+    if (before && after) {
+      if (after.done) removeTaskFromMacCalendar(before.title, before.due)
+      else syncTaskToMacCalendar(after.title, after.due)
+    }
+    return after
+  })
   ipcMain.handle('tasks:updateDue', (_e, id: unknown, due: unknown) => {
     if (typeof id !== 'number') return null
     if (due !== null && typeof due !== 'string') return null
     if (typeof due === 'string' && Number.isNaN(Date.parse(due))) return null
-    return db.updateTaskDue(id, due)
+    const before = db.listTasks().find((task) => task.id === id) ?? null
+    const after = db.updateTaskDue(id, due)
+    if (before) removeTaskFromMacCalendar(before.title, before.due)
+    if (after && !after.done) syncTaskToMacCalendar(after.title, after.due)
+    return after
   })
   ipcMain.handle('tasks:delete', (_e, id: unknown) => {
-    if (typeof id === 'number') db.deleteTask(id)
+    if (typeof id === 'number') {
+      const task = db.listTasks().find((item) => item.id === id) ?? null
+      db.deleteTask(id)
+      if (task) removeTaskFromMacCalendar(task.title, task.due)
+    }
     return true
   })
 
   ipcMain.handle('reminders:list', () => db.listReminders())
   ipcMain.handle('reminders:dismiss', (_e, id: unknown) => {
-    if (typeof id === 'number') db.dismissReminder(id)
+    if (typeof id === 'number') {
+      const reminder = db.listReminders().find((item) => item.id === id) ?? null
+      db.dismissReminder(id)
+      if (reminder) removeReminderFromMac(reminder.title, reminder.datetime)
+    }
     return true
   })
 
@@ -1894,16 +2945,40 @@ function registerIpc(): void {
       return timeResult
     }
 
+    const weatherEmailResult = await tryWeatherEmailDraftNow(text.trim(), userMessage)
+    if (weatherEmailResult) {
+      emit({ type: 'data-changed' })
+      return weatherEmailResult
+    }
+
     const weatherResult = await tryWeatherNow(text.trim(), userMessage)
     if (weatherResult) {
       emit({ type: 'data-changed' })
       return weatherResult
     }
 
+    const stockQuoteResult = await tryStockQuoteNow(text.trim(), userMessage)
+    if (stockQuoteResult) {
+      emit({ type: 'data-changed' })
+      return stockQuoteResult
+    }
+
     const marketMoversResult = await tryMarketMoversNow(text.trim(), userMessage)
     if (marketMoversResult) {
       emit({ type: 'data-changed' })
       return marketMoversResult
+    }
+
+    const writingStyleResult = await tryApplyWritingStyleNow(text.trim(), userMessage)
+    if (writingStyleResult) {
+      emit({ type: 'data-changed' })
+      return writingStyleResult
+    }
+
+    const rewriteResult = await tryRewriteTextNow(text.trim(), userMessage)
+    if (rewriteResult) {
+      emit({ type: 'data-changed' })
+      return rewriteResult
     }
 
     const summaryResult = await trySummarizeTextNow(text.trim(), userMessage)
@@ -1958,6 +3033,12 @@ function registerIpc(): void {
     if (clearTasksRemindersResult) {
       emit({ type: 'data-changed' })
       return clearTasksRemindersResult
+    }
+
+    const followUpEmailTaskResult = tryCreateFollowUpEmailTaskNow(text.trim(), userMessage)
+    if (followUpEmailTaskResult) {
+      emit({ type: 'data-changed' })
+      return followUpEmailTaskResult
     }
 
     const removeReminderResult = tryRemoveReminderNow(text.trim(), userMessage)
@@ -2049,9 +3130,15 @@ function registerIpc(): void {
     const scheduledActionsToCreate =
       res.intent === 'schedule_app_open' ? res.scheduledActions : []
 
-    for (const t of tasksToCreate) db.addTask(t.title, t.due ?? null)
-    for (const r of remindersToCreate)
+    for (const t of tasksToCreate) {
+      const due = t.due ?? null
+      db.addTask(t.title, due)
+      syncTaskToMacCalendar(t.title, due)
+    }
+    for (const r of remindersToCreate) {
       db.addReminder(r.title, r.datetime, r.recurrence)
+      syncReminderToMac(r.title, r.datetime)
+    }
 
     const rejected: string[] = []
     for (const sa of scheduledActionsToCreate) {

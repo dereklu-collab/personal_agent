@@ -64,6 +64,8 @@ export function ChatPanel({
         /^\s*(?:here(?:\s+is|'s|\u2019s)\s+)?(?:the\s+)?(?:revised\s+)?(?:email\s+)?(?:body|draft)\s*:?\s*/i,
         ''
       )
+      .replace(/\n{1,}\s*(?:Note|Notes|P\.S\. about the draft):[\s\S]*$/i, '')
+      .replace(/\n{1,}\s*\([^)]*(?:removed|changed|adjusted|revised|tone|formal|informal)[^)]*\)\s*$/i, '')
       .trim()
   }
 

@@ -372,6 +372,8 @@ function cleanStyledEmailBody(text: string): string {
       /^(?:here(?:\s+is|'s|\u2019s)\s+)?(?:the\s+)?(?:revised\s+)?(?:email\s+)?(?:body|draft)\s*:?\s*/i,
       ''
     )
+    .replace(/\n{1,}\s*(?:Note|Notes|P\.S\. about the draft):[\s\S]*$/i, '')
+    .replace(/\n{1,}\s*\([^)]*(?:removed|changed|adjusted|revised|tone|formal|informal)[^)]*\)\s*$/i, '')
     .trim()
 }
 
@@ -387,8 +389,10 @@ async function applyWritingStyleToEmail(
   const system =
     'You are an email style editor. Revise the provided draft so it matches the saved writing style profile. ' +
     'Preserve the same recipient, purpose, facts, names, dates, locations, and ask. ' +
-    'Lightly fix grammar and clarity, but do not completely rewrite the message or add new details. ' +
-    'Use the profile greeting/sign-off habits when present. Output only the revised email body.'
+    'Make the style adaptation obvious: match the user’s tone, sentence rhythm, formality, punctuation habits, word choice, greeting, and sign-off. ' +
+    'Fix grammar and clarity, but do not add new facts or change the ask. ' +
+    'If the original draft is generic, rewrite it enough that it clearly sounds like the profile while preserving the same meaning. Output only the revised email body. ' +
+    'Do not include notes, explanations, labels, commentary, or reasons for changes.'
 
   const userText = `Saved writing style profile:
 ${profile.summary}
@@ -413,6 +417,36 @@ Revise the draft to match the saved style profile while keeping the same meaning
   } catch {
     return response
   }
+}
+
+/** Apply the saved writing profile to provided text without using chat history. */
+export async function applyWritingStyleToText(text: string, instruction: string): Promise<string> {
+  const s = getRawSettings()
+  if (s.provider !== 'ollama' && !s.apiKey) {
+    throw new AssistantError('No API key set. Open Settings and add your key.')
+  }
+
+  const profile = getWritingProfile()
+  if (!profile?.summary.trim()) {
+    throw new AssistantError('Build a writing style profile first.')
+  }
+
+  const system =
+    'You are a writing style editor. Rewrite the provided text so it clearly matches the saved writing style profile. ' +
+    'Preserve the same purpose, meaning, facts, names, dates, and requests. Do not add new details. ' +
+    'Make the style adaptation obvious by matching tone, sentence rhythm, formality, punctuation habits, word choice, and sign-off habits when relevant. ' +
+    'Do not turn the text into a different format unless the user explicitly asks. Output only the revised text, with no labels, notes, markdown, or commentary.'
+
+  const userText = `Saved writing style profile:
+${profile.summary}
+
+User instruction:
+${instruction}
+
+Text to restyle:
+${text}`
+
+  return cleanStyledEmailBody(await callConfiguredPlainModel(s, system, userText))
 }
 
 /**
@@ -469,6 +503,30 @@ export async function runGeneralChat(userText: string): Promise<string> {
     'If the user asks what commands are supported, tell them to type /help. Keep the answer brief and useful.'
   const raw = await callConfiguredPlainModel(s, system, userText, historyForRequest(userText))
   return raw.trim()
+}
+
+/** Rewrite or polish provided text without using chat history or creating side effects. */
+export async function rewriteText(text: string, instruction: string): Promise<string> {
+  const s = getRawSettings()
+  if (s.provider !== 'ollama' && !s.apiKey) {
+    throw new AssistantError('No API key set. Open Settings and add your key.')
+  }
+  const system =
+    'You rewrite, polish, or paraphrase only the text the user provides. ' +
+    'Preserve the original meaning, facts, and approximate length unless the instruction asks otherwise. ' +
+    'Do not turn the text into an email, letter, task, reminder, or explanation. ' +
+    'Do not include labels, preambles, notes, markdown, quotation marks around the full answer, or commentary. Output only the rewritten text.'
+  const userText = `Instruction:
+${instruction}
+
+Text to rewrite:
+${text}`
+  const raw = await callConfiguredPlainModel(s, system, userText)
+  return raw
+    .replace(/^```(?:text|markdown)?/i, '')
+    .replace(/```$/i, '')
+    .replace(/^\s*(?:rewritten|revised|polished|paraphrased)\s+(?:text|version|paragraph)\s*:?\s*/i, '')
+    .trim()
 }
 
 /** Ask the model to summarize the user's writing samples into a style profile. */
